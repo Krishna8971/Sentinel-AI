@@ -24,24 +24,30 @@ DB_PASS = os.getenv("POSTGRES_PASSWORD", "sentinel_db_password")
 DB_NAME = os.getenv("POSTGRES_DB", "sentinel_db")
 DB_HOST = os.getenv("POSTGRES_HOST", "db")
 
-# File patterns to skip during scanning
 SKIP_DIRS = {'__pycache__', '.git', 'venv', 'env', '.venv', 'node_modules', 'migrations', 'tests', 'test'}
 SKIP_FILES = {'setup.py', 'conftest.py'}
 
-# Auth-related keywords — only analyze functions touching these patterns
-HIGH_RISK_PATTERNS = {
-    'user', 'auth', 'role', 'permission', 'token', 'session', 'admin',
-    'owner', 'access', 'credential', 'password', 'login', 'account',
-    'current_user', 'get_user', 'verify', 'authorize', 'privilege',
-    'document', 'file', 'resource', 'object', 'item', 'record',
+# Keywords that indicate a function is worth analyzing for auth issues
+AUTH_KEYWORDS = {
+    'user', 'admin', 'role', 'permission', 'auth', 'token',
+    'db.query', 'session.query', '.get(', '.filter(',
+    'current_user', 'user_id', 'owner', 'access', 'privilege',
+    'delete', 'update', 'create', 'write', 'modify',
+    'Depends', 'HTTPException', 'status_code',
 }
 
-def is_high_risk(item: dict) -> bool:
-    """Return True if this function is worth sending to the AI."""
-    if item.get('is_endpoint'):
-        return True  # always check HTTP endpoints
-    code_lower = (item.get('code', '') + item.get('function_name', '')).lower()
-    return any(kw in code_lower for kw in HIGH_RISK_PATTERNS)
+def is_security_relevant(item: Dict[str, Any]) -> bool:
+    """Returns True if this function is worth sending to the LLM."""
+    # Always analyze FastAPI endpoints
+    if item.get("is_endpoint"):
+        return True
+    code = (item.get("code") or "").lower()
+    # Skip tiny functions (< 5 lines)
+    if len(code.splitlines()) < 5:
+        return False
+    # Only analyze if auth-relevant keywords present
+    return any(kw in code for kw in AUTH_KEYWORDS)
+
 
 def calculate_score(vulnerabilities: List[Dict]) -> dict:
     base_score = 100
@@ -49,14 +55,10 @@ def calculate_score(vulnerabilities: List[Dict]) -> dict:
         v_type = vuln.get("vulnerability_type", "None")
         conf = int(vuln.get("confidence", 50))
         weight = {
-            "BOLA": 25,
-            "IDOR": 20,
-            "Privilege Escalation": 20,
-            "Missing Authentication": 15,
-            "Missing Role Guard": 10,
-            "Inconsistent Middleware": 8,
+            "BOLA": 25, "IDOR": 20,
+            "Privilege Escalation": 20, "Missing Authentication": 15,
+            "Missing Role Guard": 10, "Inconsistent Middleware": 8,
         }.get(v_type, 5)
-        # Scale by confidence
         base_score -= int(weight * conf / 100)
     final_score = max(0, min(100, base_score))
     severity = "Low"
@@ -140,20 +142,25 @@ def run_security_scan(self, repo_name: str, branch: str = "main", diff_url: str 
             except Exception as e:
                 logger.warning(f"Error reading {py_file}: {e}")
 
-    logger.info(f"Total items extracted: {len(all_items)} ({repo_name})")
+    logger.info(f"Total items found: {len(all_items)} ({repo_name})")
 
-    # Filter to only high-risk functions before sending to AI
-    filtered_items = [item for item in all_items if is_high_risk(item)]
-    logger.info(f"Items to analyze after filter: {len(filtered_items)} (was {len(all_items)})")
+    # Pre-filter: only analyze security-relevant items
+    relevant_items = [item for item in all_items if is_security_relevant(item)]
+    logger.info(f"Security-relevant items to analyze: {len(relevant_items)} (skipped {len(all_items) - len(relevant_items)} trivial functions)")
 
-
-    if not filtered_items:
+    if not relevant_items:
         score_data = {"score": 100, "severity": "Low"}
         final_vulns = []
     else:
-        # 3. Run AI analysis on filtered items
+        # Semaphore limits concurrent LLM calls to avoid overwhelming Mistral
+        SEM = asyncio.Semaphore(5)
+
+        async def analyze_with_semaphore(item):
+            async with SEM:
+                return await analyze_endpoint(item)
+
         async def run_all():
-            tasks = [analyze_endpoint(item) for item in filtered_items]
+            tasks = [analyze_with_semaphore(item) for item in relevant_items]
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         ai_results = asyncio.run(run_all())
@@ -167,7 +174,7 @@ def run_security_scan(self, repo_name: str, branch: str = "main", diff_url: str 
             if res.get("status") in ("consensus", "gemini_validated", "judged", "fallback_mistral"):
                 verdict = res.get("result", {})
                 if verdict.get("has_vulnerability") and verdict.get("confidence", 0) > 55:
-                    item = filtered_items[i]
+                    item = relevant_items[i]
                     final_vulns.append({
                         "function_name": item.get("function_name", ""),
                         "path": item.get("path", ""),

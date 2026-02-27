@@ -15,13 +15,14 @@ function App() {
   const [aiStatus, setAiStatus] = useState({ mistral: 'checking', qwen: 'checking' });
   const [scanProgress, setScanProgress] = useState(0);
   const [, setPrevScanCount] = useState(-1);
+  const [selectedScan, setSelectedScan] = useState<any>(null);
 
-  const fetchAll = () => {
+  // Only fetches live scan data — no AI status spam
+  const fetchDashboard = () => {
     fetch('/api/dashboard/stats').then(r => r.json()).then(setStats).catch(() => { });
     fetch('/api/dashboard/recent_scans').then(r => r.json()).then(d => {
       if (Array.isArray(d)) {
         setRecentScans(d);
-        // When a new scan result appears, dismiss the progress bar
         setPrevScanCount(prev => {
           if (prev >= 0 && d.length > prev) setScanProgress(0);
           return d.length;
@@ -29,20 +30,63 @@ function App() {
       }
     }).catch(() => { });
     fetch('/api/dashboard/vulnerabilities').then(r => r.json()).then(d => { if (Array.isArray(d)) setVulnerabilities(d); }).catch(() => { });
-    fetch('/api/dashboard/ai_status').then(r => r.json()).then(setAiStatus).catch(() => { });
   };
 
-  // Advance progress bar smoothly over 90s while scanning
+  const clearHistory = () => {
+    if (!confirm('Clear all scan history? This cannot be undone.')) return;
+    fetch('/api/dashboard/reset', { method: 'POST' })
+      .then(() => {
+        setStats({ score: 100, drift: 0, exploits_prevented: 0 });
+        setRecentScans([]);
+        setVulnerabilities([]);
+        setScanProgress(0);
+        localStorage.removeItem('sentinel_configured');
+        setIsConfigured(false);
+      })
+      .catch(() => {
+        // Reset locally anyway
+        setStats({ score: 100, drift: 0, exploits_prevented: 0 });
+        setRecentScans([]);
+        setVulnerabilities([]);
+        setScanProgress(0);
+        localStorage.removeItem('sentinel_configured');
+        setIsConfigured(false);
+      });
+  };
+
+  // While scanning: poll every 4s for results AND advance the bar.
+  // The instant recentScans count grows, the bar is dismissed.
   useEffect(() => {
-    if (scanProgress <= 0 || scanProgress >= 98) return;
-    const t = setTimeout(() => setScanProgress(p => Math.min(98, p + (100 / 90))), 1000);
-    return () => clearTimeout(t);
-  }, [scanProgress]);
+    if (scanProgress <= 0) return;
+
+    const tick = setInterval(() => {
+      // Advance bar smoothly (caps at 98 so it never "finishes" on its own)
+      setScanProgress(p => (p >= 98 ? 98 : Math.min(98, p + (100 / 90) * 4)));
+
+      // Check if backend has new results
+      fetch('/api/dashboard/recent_scans')
+        .then(r => r.json())
+        .then(d => {
+          if (!Array.isArray(d)) return;
+          setRecentScans(prev => {
+            if (d.length > prev.length) {
+              // New results arrived — dismiss bar and refresh everything
+              setScanProgress(0);
+              fetchDashboard();
+            }
+            return d;
+          });
+        })
+        .catch(() => { });
+    }, 4000);
+
+    return () => clearInterval(tick);
+  }, [scanProgress > 0]);
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 10000);
-    return () => clearInterval(interval);
+    // Fetch everything once on boot — no polling
+    fetch('/api/dashboard/ai_status').then(r => r.json()).then(setAiStatus).catch(() => setAiStatus({ mistral: 'offline', qwen: 'offline' }));
+    fetchDashboard();
   }, []);
 
   if (!isConfigured) {
@@ -170,20 +214,7 @@ function App() {
         {/* Header */}
         <header className="h-20 border-b border-slate-800/50 flex items-center justify-between px-8 bg-slate-900/20 backdrop-blur-sm z-10">
           <h2 className="text-xl font-medium text-slate-200 capitalize">{activeTab.replace('_', ' ')}</h2>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={async () => {
-                if (!window.confirm('Clear all scan history and vulnerabilities?')) return;
-                await fetch('/api/dashboard/reset', { method: 'DELETE' });
-                setStats({ score: 100, drift: 0, exploits_prevented: 0 });
-                setRecentScans([]);
-                setVulnerabilities([]);
-                setScanProgress(0);
-              }}
-              className="px-4 py-1.5 rounded-xl bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-400 text-sm font-medium transition-colors"
-            >
-              🗑 Clear History
-            </button>
+          <div className="flex items-center gap-4">
             <button
               onClick={() => {
                 setIsConfigured(false);
@@ -192,6 +223,13 @@ function App() {
               className="px-4 py-1.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 text-sm font-medium transition-colors"
             >
               + Scan New Repo
+            </button>
+            <button
+              onClick={clearHistory}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 transition-all"
+              title="Clear all scan history and reset dashboard"
+            >
+              Clear History
             </button>
             <div className="px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium flex items-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.15)]">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -313,7 +351,12 @@ function App() {
                     ) : (
                       <span className="text-sm text-emerald-500 font-medium">Clean</span>
                     )}
-                    <button className="text-slate-400 hover:text-slate-300">View Details &rarr;</button>
+                    <button
+                      onClick={() => setSelectedScan(pr)}
+                      className="text-emerald-400 hover:text-emerald-300 text-sm font-medium transition-colors"
+                    >
+                      View Details →
+                    </button>
                   </div>
                 </div>
               ))}
@@ -355,6 +398,84 @@ function App() {
 
         </main>
       </div>
+
+      {/* View Details Modal */}
+      {selectedScan && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setSelectedScan(null)}
+        >
+          <div
+            className="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="flex items-start justify-between mb-5">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-200">{selectedScan.title}</h3>
+                <p className="text-sm text-slate-500 mt-0.5">{selectedScan.id} · {selectedScan.time}</p>
+              </div>
+              <button
+                onClick={() => setSelectedScan(null)}
+                className="text-slate-500 hover:text-slate-300 text-xl leading-none px-2"
+              >✕</button>
+            </div>
+
+            {/* Score badge */}
+            <div className="flex items-center gap-3 mb-5">
+              <span className={`px-3 py-1 rounded-full text-sm font-bold border ${selectedScan.status === 'Passed'
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                : 'bg-red-500/10 text-red-400 border-red-500/30'
+                }`}>
+                {selectedScan.status}
+              </span>
+              {selectedScan.issues > 0 && (
+                <span className="text-sm text-red-400 font-medium flex items-center gap-1">
+                  <AlertTriangle size={14} /> {selectedScan.issues} Finding{selectedScan.issues > 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+
+            {/* Vulnerability list */}
+            {(() => {
+              const vulns = (() => {
+                try {
+                  const v = selectedScan.vulnerabilities;
+                  return Array.isArray(v) ? v : (typeof v === 'string' ? JSON.parse(v) : []);
+                } catch { return []; }
+              })();
+              return vulns.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center mx-auto mb-3">
+                    <span className="text-emerald-400 text-xl">✓</span>
+                  </div>
+                  <p className="text-slate-400 text-sm">No vulnerabilities found in this scan.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {vulns.map((v: any, i: number) => (
+                    <div key={i} className="p-4 rounded-xl bg-red-950/20 border border-red-800/30 hover:border-red-600/40 transition-all">
+                      <div className="flex items-start justify-between gap-4 mb-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${v.vulnerability_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+                            : v.vulnerability_type === 'IDOR' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                              : v.vulnerability_type === 'Privilege Escalation' ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+                                : 'bg-red-500/20 text-red-400 border-red-500/30'
+                            }`}>{v.vulnerability_type}</span>
+                          <span className="text-sm font-mono text-slate-300">{v.function_name}()</span>
+                        </div>
+                        <span className="text-xs text-slate-400 whitespace-nowrap">Confidence: <span className="text-slate-200 font-semibold">{v.confidence}%</span></span>
+                      </div>
+                      {v.reasoning && <p className="text-xs text-slate-400 leading-relaxed">{v.reasoning}</p>}
+                      {v.file_path && <p className="text-xs text-slate-600 mt-2 font-mono">{v.file_path}</p>}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* Pattern def for graph background */}
       <style>{`

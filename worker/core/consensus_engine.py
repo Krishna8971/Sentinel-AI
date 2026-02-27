@@ -2,141 +2,136 @@ import asyncio
 import json
 import logging
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from core.llm_client import mistral_client, qwen_client, gemini_client
 
 logger = logging.getLogger(__name__)
 
-DETECTION_PROMPT = """Security analysis task. Analyze this Python function for authorization vulnerabilities.
+# ──────────────────────────────────────────────
+# DETECTION PROMPT — covers all 6 PRD vulnerability types
+# ──────────────────────────────────────────────
+DETECTION_PROMPT = """You are a senior application security engineer specializing in Python backend authorization vulnerabilities.
+Analyze the function below and detect ANY of these vulnerability types:
 
-Vulnerability types (pick ONE that fits best, or None):
-- BOLA: accesses DB object by user-supplied ID without ownership check
-- IDOR: user-supplied param references object without auth check
-- Privilege Escalation: changes role/permission from user input without admin check
-- Missing Role Guard: HTTP endpoint with no Depends()/role check, exposes sensitive data
-- Missing Authentication: no identity verification before data access
-- None: code is secure
+1. BOLA (Broken Object Level Authorization): An object (DB record, file, resource) is accessed by a user-supplied ID without verifying the requesting user owns or is authorized to access that specific object.
+2. IDOR (Insecure Direct Object Reference): A user-supplied parameter directly references an internal object (ID, filename, key) without an authorization check.
+3. Privilege Escalation: A function allows changing a user's role, permission level, or administrative status based on caller-supplied input without verifying the caller is an admin.
+4. Missing Role Guard: An HTTP endpoint that handles sensitive data or mutations has no authentication/authorization guard (no Depends(), no middleware, no role check in the body).
+5. Missing Authentication: A function accesses or modifies user data but does not verify the caller is authenticated at all.
+6. Inconsistent Middleware: Related endpoint group where some routes have authorization guards but others in the same file/module do not, creating bypass possibilities.
 
-Function: {function_name} | Method: {method} | Path: {path}
-Guards: {guards} | Args: {arguments}
+ENDPOINT/FUNCTION DATA:
+Function Name: {function_name}
+Method: {method}
+Path: {path}
+Auth Guards (Depends): {guards}
+Arguments: {arguments}
 
-CODE:
+SOURCE CODE:
 {code}
 
-Reply ONLY with this JSON (no markdown, one short sentence for reasoning):
-{{"has_vulnerability": true, "vulnerability_type": "BOLA", "confidence": 85, "reasoning": "sentence"}}
+RULES:
+- Only flag REAL vulnerabilities with clear evidence in the code above.
+- A function with both an ID parameter and NO ownership check in the code body = BOLA.
+- A function that calls db.query without filtering by current_user = likely BOLA or IDOR.
+- If no auth guard AND no manual auth check in body = Missing Auth.
+- Do NOT flag vulnerabilities if the code explicitly has an ownership check or role validation.
+
+Respond ONLY with this exact JSON (no markdown, no extra text):
+{{"has_vulnerability": true, "vulnerability_type": "BOLA|IDOR|Privilege Escalation|Missing Role Guard|Missing Authentication|Inconsistent Middleware|None", "confidence": 85, "reasoning": "One clear sentence explaining the specific vulnerability found."}}
 """
 
-GEMINI_VALIDATION_PROMPT = """You are a security validation engine. Analyze findings from two AI models.
-Produce a final verdict. Be conservative — only confirm with solid evidence.
+GEMINI_VALIDATION_PROMPT = """You are a security validation engine. Two AI models analyzed a Python function and produced findings below.
+Your job is to produce the FINAL verdict. Be conservative — only confirm if there is solid evidence.
 
-CODE:
+FUNCTION CODE:
 {code}
 
-MISTRAL: {mistral_result}
-QWEN: {qwen_result}
+MISTRAL FINDING: {mistral_result}
+QWEN FINDING: {qwen_result}
 
 Output ONLY this JSON (no markdown):
-{{"has_vulnerability": true, "vulnerability_type": "string", "confidence": 0, "reasoning": "sentence"}}
+{{"has_vulnerability": true/false, "vulnerability_type": "string", "confidence": 0-100, "reasoning": "Final one-sentence verdict."}}
 """
 
-NULL_RESULT = {"has_vulnerability": False, "vulnerability_type": "None", "confidence": 0, "reasoning": "No issue found"}
+
+def _parse_json(text: str) -> Dict[str, Any]:
+    """Extract JSON from model output, tolerating markdown fences."""
+    text = text.strip()
+    # strip markdown fences
+    text = re.sub(r"^```[a-z]*\n?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"```$", "", text)
+    # find first JSON object
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    return {"has_vulnerability": False, "vulnerability_type": "None", "confidence": 0, "reasoning": "Parse error"}
 
 
-def _parse_json(text: str) -> Optional[Dict[str, Any]]:
-    """Extract JSON from model output. Returns None on any failure."""
-    if not text or not text.strip():
-        return None
-    try:
-        # Strip markdown fences
-        text = re.sub(r"^```[a-z]*\n?", "", text.strip(), flags=re.IGNORECASE)
-        text = re.sub(r"```$", "", text)
-        # Find the first JSON object in the response
-        match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
-        if match:
-            obj = json.loads(match.group())
-            # Validate required fields are present
-            if "has_vulnerability" in obj:
-                return obj
-    except Exception:
-        pass
-    return None
-
-
-async def _call_model_once(client, prompt: str, model_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Single-shot model call. No retries. Returns None on ANY failure.
-    This guarantees we never get stuck in an error loop.
-    """
+async def _call_model(client, prompt: str, model_name: str) -> Dict[str, Any]:
     try:
         text = await client.generate_completion(prompt)
         result = _parse_json(text)
-        if result:
-            logger.info(f"[{model_name}] ✓ {result.get('vulnerability_type')} conf={result.get('confidence')}")
-        else:
-            logger.warning(f"[{model_name}] returned unparseable response: {str(text)[:100]}")
+        logger.info(f"[{model_name}] {result}")
         return result
-    except asyncio.TimeoutError:
-        logger.warning(f"[{model_name}] timed out — skipping")
-        return None
     except Exception as e:
-        # Log with repr() so empty-string exceptions still show their type
-        logger.warning(f"[{model_name}] failed ({repr(e)}) — skipping")
+        logger.warning(f"[{model_name}] unavailable: {e}")
         return None
 
 
 async def analyze_endpoint(endpoint: Dict[str, Any]) -> Dict[str, Any]:
-    code = endpoint.get("code", "")
-    if not code.strip():
-        return {"status": "skipped", "result": NULL_RESULT}
-
     prompt = DETECTION_PROMPT.format(
         function_name=endpoint.get("function_name", ""),
         method=endpoint.get("method", "FUNCTION"),
         path=endpoint.get("path", ""),
         guards=endpoint.get("guards", []),
         arguments=endpoint.get("arguments", []),
-        code=code
+        code=endpoint.get("code", "")
     )
 
-    # Step 1: Mistral and Qwen in parallel — each has exactly ONE attempt, no retries
-    mistral_result, qwen_result = await asyncio.gather(
-        _call_model_once(mistral_client, prompt, "Mistral"),
-        _call_model_once(qwen_client, prompt, "Qwen"),
-        return_exceptions=False   # exceptions returned as None via _call_model_once
-    )
+    # Step 1: Run Mistral and Qwen in parallel
+    mistral_task = asyncio.create_task(_call_model(mistral_client, prompt, "Mistral"))
+    qwen_task = asyncio.create_task(_call_model(qwen_client, prompt, "Qwen"))
+    mistral_result, qwen_result = await asyncio.gather(mistral_task, qwen_task)
 
-    # Step 2: Gemini validation (only if at least one model returned a finding)
+    # Step 2: Gemini validation
     gemini_result = None
-    any_finding = mistral_result or qwen_result
-    if gemini_client.available and any_finding:
+    if gemini_client.available and (mistral_result or qwen_result):
         val_prompt = GEMINI_VALIDATION_PROMPT.format(
-            code=code,
+            code=endpoint.get("code", ""),
             mistral_result=json.dumps(mistral_result) if mistral_result else "unavailable",
             qwen_result=json.dumps(qwen_result) if qwen_result else "unavailable"
         )
         try:
             gemini_text = await gemini_client.validate(val_prompt)
             gemini_result = _parse_json(gemini_text)
-            if gemini_result:
-                logger.info(f"[Gemini] ✓ validated: {gemini_result.get('vulnerability_type')}")
+            logger.info(f"[Gemini] validation: {gemini_result}")
         except Exception as e:
-            logger.warning(f"[Gemini] failed ({repr(e)})")
+            logger.warning(f"[Gemini] validation error: {e}")
 
-    # Step 3: Final decision — Gemini trumps if confident, else Mistral wins over Qwen
-    if gemini_result and isinstance(gemini_result.get("confidence"), (int, float)) and gemini_result["confidence"] > 50:
+    # Step 3: Final decision — Gemini wins if available, else majority vote
+    if gemini_result and gemini_result.get("confidence", 0) > 0:
         return {"status": "gemini_validated", "result": gemini_result}
 
-    # Pick the highest-confidence finding from Mistral/Qwen
-    candidates = [r for r in [mistral_result, qwen_result] if r and r.get("has_vulnerability") and r.get("confidence", 0) > 55]
-    if candidates:
-        best = max(candidates, key=lambda r: r.get("confidence", 0))
+    # Majority vote between Mistral and Qwen
+    results = [r for r in [mistral_result, qwen_result] if r]
+    if not results:
+        return {"status": "all_failed", "result": {"has_vulnerability": False, "vulnerability_type": "None", "confidence": 0, "reasoning": "All models unavailable"}}
+
+    # If either finds a vulnerability with confidence > 60, flag it
+    vuln_results = [r for r in results if r.get("has_vulnerability") and r.get("confidence", 0) > 60]
+    if vuln_results:
+        # Pick highest confidence result
+        best = max(vuln_results, key=lambda r: r.get("confidence", 0))
         return {"status": "consensus", "result": best}
 
-    # Nothing found / all unavailable
-    return {"status": "clean", "result": NULL_RESULT}
+    # No vulnerability found
+    return {"status": "clean", "result": {"has_vulnerability": False, "vulnerability_type": "None", "confidence": 0, "reasoning": "No vulnerability detected"}}
 
 
-# Backward compat alias
+# Keep old name for backward compatibility
 async def analyze_endpoint_parallel(endpoint: Dict[str, Any]) -> Dict[str, Any]:
     return await analyze_endpoint(endpoint)

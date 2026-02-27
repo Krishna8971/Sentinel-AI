@@ -55,26 +55,41 @@ async def get_recent_scans():
     conn = await get_db_connection()
     if conn:
         try:
-            scans = await conn.fetch('SELECT repo_name, commit_hash, timestamp, severity, auth_integrity_score FROM scan_results ORDER BY timestamp DESC LIMIT 5')
+            scans = await conn.fetch(
+                'SELECT repo_name, commit_hash, timestamp, severity, auth_integrity_score, vulnerabilities '
+                'FROM scan_results ORDER BY timestamp DESC LIMIT 10'
+            )
             await conn.close()
             
             if scans:
+                import json
                 result = []
                 for s in scans:
-                    issues = 0 if s['severity'] == "Low" else (2 if s['severity'] == "Medium" else 5)
+                    vulns = s['vulnerabilities']
+                    if isinstance(vulns, str):
+                        try:
+                            vulns = json.loads(vulns)
+                        except Exception:
+                            vulns = []
+                    if not vulns:
+                        vulns = []
                     result.append({
                         "id": f"#{s['commit_hash'][:6]}",
                         "status": "Passed" if s['auth_integrity_score'] >= 80 else "Blocked",
-                        "title": f"Scan for {s['repo_name']}",
-                        "issues": issues,
-                        "time": s['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                        "title": f"Scan: {s['repo_name']}",
+                        "issues": len(vulns),
+                        "time": s['timestamp'].strftime("%Y-%m-%d %H:%M"),
+                        "vulnerabilities": vulns,
+                        "score": s['auth_integrity_score'],
+                        "severity": s['severity']
                     })
                 return result
-        except Exception:
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
             if not conn.is_closed():
                 await conn.close()
                 
-    # Return empty list if no scans exist
     return []
 
 @router.get("/vulnerabilities")
@@ -105,14 +120,14 @@ async def get_vulnerabilities():
                 await conn.close()
     return []
 
-@router.delete("/reset")
+@router.post("/reset")
 async def reset_dashboard_stats():
     conn = await get_db_connection()
     if conn:
         try:
             await conn.execute('DELETE FROM scan_results')
             await conn.close()
-            return {"status": "success", "message": "Database wiped."}
+            return {"status": "success", "message": "History cleared."}
         except Exception as e:
             if not conn.is_closed():
                 await conn.close()

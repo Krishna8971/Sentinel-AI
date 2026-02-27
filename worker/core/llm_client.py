@@ -28,17 +28,15 @@ class LMStudioClient:
         payload = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "max_tokens": 120  # Short JSON reply only — speeds up inference 3-4x
+            "temperature": 0.1
+            # No max_tokens cap — model decides when done
         }
-        # Mistral gets full 90s; Qwen gets 15s (fail fast if offline)
-        timeout = 90.0 if 'mistral' in self.model_name.lower() else 15.0
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             logger.info(f"[{self.model_name}] POST {url}")
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-            logger.info(f"[{self.model_name}] OK — {str(data)[:150]}")
+            logger.info(f"[{self.model_name}] OK")
             return data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
 
@@ -46,28 +44,48 @@ class GeminiClient:
     def __init__(self):
         self.api_key = GEMINI_API_KEY
         self.available = bool(self.api_key and self.api_key != "your_gemini_api_key_here")
+        self._model = None
         if self.available:
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
-            self._model = genai.GenerativeModel("gemini-1.5-flash")
-            logger.info("GeminiClient ready: gemini-1.5-flash")
+            # Try flash first, fall back to stable gemini-pro
+            for model_name in ("gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-pro"):
+                try:
+                    self._model = genai.GenerativeModel(model_name)
+                    # Quick validate — list models to confirm key works
+                    logger.info(f"GeminiClient ready: {model_name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"GeminiClient: {model_name} unavailable: {e}")
+            if not self._model:
+                self.available = False
+                logger.warning("GeminiClient: No Gemini model could be loaded — validation disabled")
         else:
-            logger.warning("GeminiClient: No API key configured, Gemini validation disabled")
+            logger.warning("GeminiClient: No API key — Gemini validation disabled")
 
     async def validate(self, prompt: str) -> str:
-        if not self.available:
+        if not self.available or not self._model:
             return ""
         import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._model.generate_content(prompt)
-            )
-            return response.text
-        except Exception as e:
-            logger.error(f"[Gemini] Error: {e}")
-            return ""
+        import google.generativeai as genai
+        fallbacks = ("gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-pro", "gemini-1.0-pro")
+        for model_name in fallbacks:
+            try:
+                model = genai.GenerativeModel(model_name)
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, lambda m=model: m.generate_content(prompt))
+                self._model = model  # cache working model
+                return response.text
+            except Exception as e:
+                err = str(e)
+                if "404" in err or "not found" in err.lower() or "not supported" in err.lower():
+                    logger.warning(f"[Gemini] {model_name} not available, trying next...")
+                    continue
+                logger.error(f"[Gemini] Error with {model_name}: {e}")
+                return ""
+        logger.error("[Gemini] All models exhausted — disabling Gemini validation")
+        self.available = False
+        return ""
 
 
 mistral_client = LMStudioClient(model_name=MISTRAL_MODEL, base_url=MISTRAL_API_BASE_URL)
