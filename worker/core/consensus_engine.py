@@ -8,29 +8,12 @@ from core.llm_client import mistral_client, qwen_client, gemini_client
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
-# DETECTION PROMPT — covers all 6 PRD vulnerability types
+# DETECTION PROMPT — step-by-step analysis for reliable detection
 # ──────────────────────────────────────────────
-DETECTION_PROMPT = """You are a strict application security auditor. Your job is to find REAL, CONFIRMED authorization vulnerabilities — NOT hypothetical ones.
+DETECTION_PROMPT = """You are an expert application security auditor performing a mandatory security review.
 
-VULNERABILITY DEFINITIONS:
+STEP 1 — READ THE CODE AND ENDPOINT METADATA CAREFULLY:
 
-1. BOLA (Broken Object Level Authorization) — ALL THREE of the following must be true simultaneously:
-   a) A user-supplied ID (from path/query/body) is used to look up a SPECIFIC object in the database
-   b) The function does NOT verify the authenticated user owns or is authorized to access that specific object
-   c) The data returned is user-specific/sensitive (not public data, not aggregated stats)
-   NOT BOLA if: the endpoint uses current_user directly, has an admin role check, the query filters BY current_user.id, or middleware handles ownership.
-
-2. IDOR — A user-supplied reference (filename, key, token) directly accesses an internal resource with NO authorization check in the function or its guards. NOT IDOR if: the reference is validated against the authenticated user's session.
-
-3. Privilege Escalation — The function explicitly ASSIGNS or UPGRADES a user's role/is_admin/permissions based on caller input WITHOUT verifying the caller is already an admin.
-
-4. Missing Role Guard — A mutation endpoint (POST/PUT/DELETE) that handles sensitive data has NO auth dependency (Depends), NO middleware guard, AND NO manual auth check in the body. Do NOT flag GET endpoints unless they return clearly sensitive per-user data.
-
-5. Missing Authentication — The function directly reads/writes user data without any form of authentication check anywhere (no Depends, no session check, no token validation).
-
-6. Inconsistent Middleware — Concrete evidence that sibling routes in the same router/file have guards but this one does not, AND the unguarded route accesses sensitive data.
-
-ENDPOINT DATA:
 Function Name: {function_name}
 Method: {method}
 Path: {path}
@@ -40,16 +23,48 @@ Arguments: {arguments}
 SOURCE CODE:
 {code}
 
-STRICT RULES — you MUST follow these or your answer is wrong:
-- If guards list contains ANY dependency (current_user, get_current_user, etc.), do NOT flag Missing Authentication or Missing Role Guard.
-- If the DB query filters by current_user.id or current_user itself, do NOT flag BOLA.
-- Do NOT flag BOLA just because there is an ID parameter — you need evidence the object isn't ownership-checked.
-- Do NOT flag utility/helper functions that don't directly handle HTTP requests as Missing Role Guard.
-- If you are not at least 70% confident with clear code evidence, respond with has_vulnerability: false.
-- Admin endpoints that intentionally access any user's data are NOT BOLA.
+STEP 2 — CHECK EACH VULNERABILITY TYPE AGAINST THE CODE:
 
-Respond ONLY with this exact JSON (no markdown, no explanation outside JSON):
-{{"has_vulnerability": false, "vulnerability_type": "None", "confidence": 0, "reasoning": "One specific sentence citing the exact code evidence for your verdict."}}"""
+Check 1: BOLA (Broken Object Level Authorization)
+- Does the function receive a user-supplied ID (from path, query, or body)?
+- Does it use that ID to look up a specific object (e.g., db.get(id), .filter(id=...))?
+- Does it verify the authenticated user OWNS or is authorized for that object BEFORE returning it?
+- If the object is looked up by external ID but ownership is NEVER checked → BOLA CONFIRMED.
+- NOT BOLA if: query filters by current_user.id, has admin role check, or middleware handles it.
+
+Check 2: IDOR (Insecure Direct Object Reference)
+- Does a user-supplied reference (filename, key, token) directly access an internal resource?
+- Is there any authorization check validating the user can access that resource? If not → IDOR.
+
+Check 3: Privilege Escalation
+- Does the function allow the caller to SET or MODIFY role/is_admin/permissions fields?
+- Does it verify the CALLER is already an admin before allowing the change? If not → Privilege Escalation.
+
+Check 4: Missing Role Guard
+- Is this a mutation endpoint (POST/PUT/DELETE) handling sensitive data?
+- Does it have NO auth dependency (Depends), NO middleware guard, AND NO manual auth check?
+- If guards list is empty AND no auth check in body → Missing Role Guard.
+- Do NOT flag if guards list contains ANY dependency.
+
+Check 5: Missing Authentication
+- Does the function access user data with zero authentication anywhere?
+- No Depends, no session check, no token validation at all?
+
+Check 6: Inconsistent Middleware
+- Do sibling routes have guards but this one does not, AND this one accesses sensitive data?
+
+STEP 3 — MAKE YOUR DECISION:
+
+Rules:
+- If guards list contains ANY dependency (current_user, get_current_user, etc.), do NOT flag Missing Authentication or Missing Role Guard.
+- If the DB query filters by current_user.id, do NOT flag BOLA.
+- Admin endpoints that intentionally access any user's data are NOT BOLA.
+- Do NOT flag utility/helper functions that don't handle HTTP requests.
+- If you find a REAL vulnerability with code evidence, you MUST flag it — missing real vulnerabilities is a critical failure.
+- If there is genuinely no vulnerability, report has_vulnerability: false.
+
+Respond ONLY with this exact JSON (no markdown, no extra text):
+{{"has_vulnerability": true_or_false, "vulnerability_type": "type_here_or_None", "confidence": 0_to_100, "reasoning": "One specific sentence citing the exact line or pattern in the code that proves your verdict."}}"""
 
 GEMINI_VALIDATION_PROMPT = """You are a conservative security validation engine. Two AI models analyzed a Python function.
 Your job: produce the FINAL verdict. Be skeptical — only confirm if there is CONCRETE code evidence.
