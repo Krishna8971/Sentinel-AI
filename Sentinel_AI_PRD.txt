@@ -1,0 +1,287 @@
+PRODUCT REQUIREMENTS DOCUMENT (PRD)
+
+Product Name: Sentinel AI Autonomous Authorization Integrity &
+Continuous Security Intelligence Platform
+
+1.  Executive Summary
+
+Sentinel AI is a multi-agent AI security platform designed to detect,
+validate, and continuously test authentication and authorization
+vulnerabilities in Python backend systems.
+
+Unlike traditional security scanners that rely on static pattern
+matching or external penetration testing, Sentinel AI:
+
+-   Models authorization logic as a system
+-   Detects privilege escalation paths
+-   Identifies silent permission drift during refactors
+-   Runs continuous internal adversarial simulations
+-   Reduces false positives through layered AI validation
+
+The platform operates across the software lifecycle:
+
+1.  Development-Time Intelligence (CI/CD)
+2.  Production-Time Autonomous Red Team
+
+Sentinel AI functions as:
+
+-   GitHub Copilot for authorization security
+-   Continuous internal red-team engineer
+-   Authorization graph monitoring system
+
+2.  Problem Statement
+
+Modern backend systems suffer from:
+
+-   Broken Object Level Authorization (BOLA)
+-   Privilege escalation paths
+-   Missing role guards
+-   Refactor-induced permission drift
+-   IDOR vulnerabilities
+-   Inconsistent middleware enforcement
+
+Existing tools:
+
+-   Focus on pattern-based scanning
+-   Lack contextual role reasoning
+-   Do not model authorization relationships
+-   Produce high false positives
+-   Do not detect version-to-version permission drift
+
+There is no system that:
+
+-   Continuously models authorization as a graph
+-   Detects silent permission changes
+-   Simulates adversarial access in production safely
+-   Explains vulnerabilities in engineering language
+
+3.  Product Vision
+
+Sentinel AI will become the industry-standard platform for authorization
+integrity.
+
+Core Vision:
+
+Authorization should be continuously modeled, validated, and
+adversarially tested — not assumed correct.
+
+4.  Target Users
+
+Primary: - Backend Engineering Teams - Security Engineering Teams -
+DevSecOps Teams
+
+Secondary: - CTOs - CISOs - Compliance Officers
+
+Initial ICP (Ideal Customer Profile): - SaaS companies - Fintech -
+HealthTech - B2B platforms - API-first businesses
+
+5.  Core Product Architecture
+
+Sentinel AI consists of 3 AI intelligence layers:
+
+5.1 Surface & Structure Intelligence
+
+Purpose: Extract backend attack surface and structured authorization
+signals.
+
+Responsibilities: - Route extraction - HTTP method detection -
+Middleware detection - Guard detection - Parameter extraction - Debug
+route detection - CORS misconfiguration detection - OpenAPI spec
+comparison
+
+Output: Strict structured JSON only.
+
+5.2 Auth & Access Control Intelligence (Core Differentiator)
+
+Purpose: Deep reasoning over structured surface data.
+
+Responsibilities: - Authentication correctness validation -
+Authorization correctness validation - Privilege escalation detection -
+Role inheritance analysis - IDOR detection - Permission drift detection
+(diff-based) - Attack path simulation
+
+Output: - Risk classification - Confidence score - Attack path
+explanation - Severity level
+
+5.3 Security Reasoning & Validation Engine
+
+Purpose: Reduce false positives and produce actionable output.
+
+Responsibilities: - Cross-validation of findings - Severity scoring -
+Risk prioritization - Human-readable explanations - Code patch
+suggestions - PR comment generation
+
+6.  Key Features (MVP Scope)
+
+6.1 Development-Time Intelligence
+
+-   GitHub App integration
+-   PR-based scanning
+-   Diff-based permission drift detection
+-   Authorization graph modeling
+-   Merge blocking for high severity issues
+-   Structured PR comments
+
+6.2 Authorization Graph Visualization
+
+-   Role to Route to Resource mapping
+-   Interactive graph viewer
+-   Privilege escalation path highlighting
+-   Drift timeline
+
+6.3 Production Continuous Validation (Phase 2)
+
+-   Internal adversarial agent
+-   Controlled BOLA testing
+-   Token replay testing
+-   Horizontal and vertical escalation testing
+-   Non-destructive simulation
+-   Real-time alerts
+
+7.  Non-Goals (Initial Version)
+
+-   Multi-language support (Python only initially)
+-   Full network penetration testing
+-   Infrastructure security scanning
+-   Malware detection
+-   Code formatting tools
+
+8.  Technical Requirements
+
+Backend: - Python (FastAPI) - PostgreSQL - Neo4j (authorization graph) -
+Redis (queue) - Celery (task workers)
+
+AI Layer: - Local Qwen2.5-Coder-7B - Mistral 7B for reasoning -
+Deterministic JSON inference - Schema enforcement
+
+Deployment: - Dockerized microservices - Kubernetes-ready - No outbound
+internet access for AI containers
+
+Security: - Tenant isolation - Encrypted GitHub tokens - Audit logging -
+SOC2-ready logging model - Role-based dashboard access
+
+9.  Performance Requirements
+
+CI Scan Target: - Less than 2 minutes per medium-sized repo - Less than
+20 seconds per PR diff
+
+Production Red-Team: - Configurable interval (daily/hourly) -
+Rate-limited attack simulations
+
+System: - Horizontally scalable containers - Fault isolation per agent
+
+10. UX Requirements
+
+Dashboard must include:
+
+-   Authorization Integrity Score (0–100)
+-   Drift Delta Visualization
+-   Exploitability Indicator
+-   Risk Severity Breakdown
+-   Attack Path Visualization
+-   PR Comment Preview
+-   Patch Suggestion Viewer
+
+Output must be:
+
+-   Clear
+-   Engineering-friendly
+-   Non-alarmist
+-   Actionable
+
+11. Risk Scoring Model
+
+Composite score based on:
+
+-   Exploitability
+-   Privilege impact
+-   Exposure surface
+-   Drift delta
+-   Confidence level
+
+Score Range: 0–100
+
+Severity Mapping: - 0–30 → Low - 31–60 → Medium - 61–80 → High - 81–100
+→ Critical
+
+12. Data Flow Overview
+
+13. GitHub webhook triggers scan.
+
+14. Orchestrator extracts Python files.
+
+15. Surface Intelligence container processes structure.
+
+16. Auth Intelligence container performs reasoning.
+
+17. Validation Engine filters and scores.
+
+18. Results stored in PostgreSQL.
+
+19. Graph updated in Neo4j.
+
+20. PR comment generated.
+
+21. Dashboard updated.
+
+22. Success Metrics
+
+MVP Success Criteria:
+
+-   Less than 10 percent false positive rate
+-   Detect known IDOR test cases
+-   Detect privilege escalation test cases
+-   Successful diff-based drift detection
+-   CI integration without blocking normal workflow
+
+Business Metrics:
+
+-   Time-to-detect authorization flaws reduced
+-   Reduced production auth incidents
+-   CI adoption rate
+-   Developer trust score
+
+14. Future Roadmap (Post-MVP)
+
+-   Multi-language support
+-   Real-time production streaming analysis
+-   Automated patch PR creation
+-   Compliance reporting (SOC2, HIPAA)
+-   Enterprise SSO
+-   Audit export
+-   Risk trend ML modeling
+
+15. Strategic Moat
+
+Sentinel AI is defensible because:
+
+-   Authorization Graph Modeling
+-   Continuous Drift Detection
+-   Internal Autonomous Adversarial Agent
+-   Multi-layer AI validation reducing noise
+-   Python-first deep contextual modeling
+
+Most tools scan patterns. Sentinel models system logic.
+
+16. Open Questions
+
+-   UX approach for graph visualization?
+-   Multi-tenant architecture design?
+-   Secure GitHub App onboarding flow?
+-   Enterprise pricing model?
+-   SLA expectations?
+-   On-prem deployment option?
+
+17. MVP Timeline Estimate
+
+Phase 1 (8–10 weeks): - Surface Intelligence - Auth Intelligence -
+Validation Engine - GitHub integration - Dashboard MVP
+
+Phase 2 (6–8 weeks): - Production adversarial agent - Drift timeline
+engine - Advanced scoring
+
+Final Positioning Statement
+
+Sentinel AI is the first system that continuously models, validates, and
+adversarially tests authorization logic as a living security system —
+not a static checklist.

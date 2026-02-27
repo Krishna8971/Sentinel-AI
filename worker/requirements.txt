@@ -1,0 +1,7 @@
+celery
+redis
+neo4j
+psycopg2-binary
+pydantic
+python-dotenv
+httpx
