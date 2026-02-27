@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Activity, ShieldAlert, GitBranch, Bell, Settings, TerminalSquare, AlertTriangle } from 'lucide-react';
+import { Activity, ShieldAlert, GitBranch, Settings, TerminalSquare, AlertTriangle } from 'lucide-react';
 
 function App() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -187,16 +187,6 @@ function App() {
           >
             <GitBranch size={18} />
             PR Scans
-          </button>
-          <button
-            onClick={() => setActiveTab('notifications')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'notifications' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-          >
-            <Bell size={18} />
-            Notifications
-            {recentScans.some((s: any) => s.issues > 0) && (
-              <span className="ml-auto w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.8)]" />
-            )}
           </button>
         </nav>
 
