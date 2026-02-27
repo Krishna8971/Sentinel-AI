@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Activity, ShieldAlert, GitBranch, Network, Settings, TerminalSquare, AlertTriangle } from 'lucide-react';
+import { Activity, ShieldAlert, GitBranch, Bell, Settings, TerminalSquare, AlertTriangle } from 'lucide-react';
 
 function App() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -15,8 +15,6 @@ function App() {
   const [scanProgress, setScanProgress] = useState(0);
   const [, setPrevScanCount] = useState(-1);
   const [selectedScan, setSelectedScan] = useState<any>(null);
-  const [graphData, setGraphData] = useState<{ nodes: any[], stats: any } | null>(null);
-  const [graphSearch, setGraphSearch] = useState('');
   const scanBaselineRef = useRef<number>(0);
 
   // Only fetches live scan data — no AI status spam
@@ -184,18 +182,21 @@ function App() {
             Overview
           </button>
           <button
-            onClick={() => { setActiveTab('graph'); setGraphData(null); fetch('/api/graph/data').then(r => r.json()).then(setGraphData).catch(() => { }); }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'graph' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-          >
-            <Network size={18} />
-            Auth Graph
-          </button>
-          <button
             onClick={() => setActiveTab('pr')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'pr' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
           >
             <GitBranch size={18} />
             PR Scans
+          </button>
+          <button
+            onClick={() => setActiveTab('notifications')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'notifications' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+          >
+            <Bell size={18} />
+            Notifications
+            {recentScans.some((s: any) => s.issues > 0) && (
+              <span className="ml-auto w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.8)]" />
+            )}
           </button>
         </nav>
 
@@ -266,82 +267,7 @@ function App() {
         )}
 
         {/* Dashboard Content */}
-        {activeTab === 'graph' ? (
-          /* ── AUTH GRAPH TAB ── */
-          <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-semibold text-slate-200">Authorization Map</h3>
-                <p className="text-sm text-slate-500 mt-1">All scanned functions/routes — color-coded by vulnerability status</p>
-              </div>
-              <input
-                type="text"
-                placeholder="Search functions..."
-                value={graphSearch}
-                onChange={e => setGraphSearch(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 w-64"
-              />
-            </div>
-
-            {/* Stats row */}
-            {graphData && (
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 text-center">
-                  <div className="text-3xl font-bold text-slate-200">{graphData.stats.total}</div>
-                  <div className="text-xs text-slate-500 mt-1">Total Analyzed</div>
-                </div>
-                <div className="bg-red-950/30 border border-red-800/30 rounded-xl p-4 text-center">
-                  <div className="text-3xl font-bold text-red-400">{graphData.stats.vulnerable}</div>
-                  <div className="text-xs text-slate-500 mt-1">Vulnerable</div>
-                </div>
-                <div className="bg-emerald-950/20 border border-emerald-800/20 rounded-xl p-4 text-center">
-                  <div className="text-3xl font-bold text-emerald-400">{graphData.stats.clean}</div>
-                  <div className="text-xs text-slate-500 mt-1">Clean</div>
-                </div>
-              </div>
-            )}
-
-            {/* Node cards */}
-            {!graphData ? (
-              <div className="flex items-center justify-center h-48 text-slate-500 text-sm">
-                <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mr-3"></span>
-                Loading graph data...
-              </div>
-            ) : graphData.nodes.length === 0 ? (
-              <div className="text-center py-16 text-slate-500">
-                <Network size={40} className="mx-auto mb-4 opacity-30" />
-                <p>No scan data yet. Run a scan to populate the auth graph.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {graphData.nodes
-                  .filter(n => !graphSearch || n.label.toLowerCase().includes(graphSearch.toLowerCase()) || n.function_name.toLowerCase().includes(graphSearch.toLowerCase()))
-                  .map((node: any, i: number) => (
-                    <div key={i} className={`p-4 rounded-xl border transition-all hover:scale-[1.01] ${node.status === 'vulnerable'
-                      ? 'bg-red-950/20 border-red-800/40 hover:border-red-600/60'
-                      : 'bg-emerald-950/10 border-emerald-800/20 hover:border-emerald-600/40'
-                      }`}>
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${node.vuln_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-                          : node.vuln_type === 'IDOR' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-                            : node.vuln_type === 'Privilege Escalation' ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
-                              : node.status === 'vulnerable' ? 'bg-red-500/20 text-red-400 border-red-500/30'
-                                : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                          }`}>{node.status === 'vulnerable' ? node.vuln_type : 'Clean'}</span>
-                        {node.status === 'vulnerable' && (
-                          <span className="text-xs text-slate-400 whitespace-nowrap">{node.confidence}%</span>
-                        )}
-                      </div>
-                      <p className="text-sm font-mono text-slate-200 truncate" title={node.label}>{node.label}</p>
-                      <p className="text-xs text-slate-500 mt-1 truncate">{node.function_name}()</p>
-                      {node.reasoning && <p className="text-xs text-slate-500 mt-2 leading-relaxed line-clamp-2">{node.reasoning}</p>}
-                      <p className="text-xs text-slate-600 mt-2 truncate font-mono">{node.file_path || node.repo}</p>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </main>
-        ) : (
+        {activeTab !== 'pr' ? (
           <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
 
             {/* Top Stats Row */}
@@ -382,9 +308,6 @@ function App() {
                   <h3 className="text-lg font-medium text-slate-200">Authorization Graph</h3>
                   <p className="text-sm text-slate-500">Role &rarr; Route &rarr; Resource Mapping</p>
                 </div>
-                <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sm rounded-lg transition-colors border border-slate-700 font-medium">
-                  Open Full Graph
-                </button>
               </div>
 
               <div className="flex-1 border border-slate-800/50 rounded-xl bg-slate-950/50 flex items-center justify-center relative overflow-hidden">
@@ -443,95 +366,142 @@ function App() {
 
 
           </main>
-        )}
-      </div>
-
-      {/* View Details Modal */}
-      {selectedScan && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
-          onClick={() => setSelectedScan(null)}
-        >
-          <div
-            className="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Modal header */}
-            <div className="flex items-start justify-between mb-5">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-200">{selectedScan.title}</h3>
-                <p className="text-sm text-slate-500 mt-0.5">{selectedScan.id} · {selectedScan.time}</p>
+        ) : (
+          /* ── PR SCANS TAB ── */
+          <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-200">PR Scan History</h3>
+              <p className="text-sm text-slate-500 mt-1">All repository scans with AI security analysis results</p>
+            </div>
+            {recentScans.length === 0 ? (
+              <div className="text-center py-20 text-slate-500">
+                <GitBranch size={40} className="mx-auto mb-4 opacity-30" />
+                <p>No scans yet. Submit a repository URL to begin analysis.</p>
               </div>
-              <button
-                onClick={() => setSelectedScan(null)}
-                className="text-slate-500 hover:text-slate-300 text-xl leading-none px-2"
-              >✕</button>
-            </div>
-
-            {/* Score badge */}
-            <div className="flex items-center gap-3 mb-5">
-              <span className={`px-3 py-1 rounded-full text-sm font-bold border ${selectedScan.status === 'Passed'
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                : 'bg-red-500/10 text-red-400 border-red-500/30'
-                }`}>
-                {selectedScan.status}
-              </span>
-              {selectedScan.issues > 0 && (
-                <span className="text-sm text-red-400 font-medium flex items-center gap-1">
-                  <AlertTriangle size={14} /> {selectedScan.issues} Finding{selectedScan.issues > 1 ? 's' : ''}
-                </span>
-              )}
-            </div>
-
-            {/* Vulnerability list */}
-            {(() => {
-              const vulns = (() => {
-                try {
-                  const v = selectedScan.vulnerabilities;
-                  return Array.isArray(v) ? v : (typeof v === 'string' ? JSON.parse(v) : []);
-                } catch { return []; }
-              })();
-              return vulns.length === 0 ? (
-                <div className="text-center py-8">
-                  <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center mx-auto mb-3">
-                    <span className="text-emerald-400 text-xl">✓</span>
-                  </div>
-                  <p className="text-slate-400 text-sm">No vulnerabilities found in this scan.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {vulns.map((v: any, i: number) => (
-                    <div key={i} className="p-4 rounded-xl bg-red-950/20 border border-red-800/30 hover:border-red-600/40 transition-all">
-                      <div className="flex items-start justify-between gap-4 mb-2">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${v.vulnerability_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-                            : v.vulnerability_type === 'IDOR' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-                              : v.vulnerability_type === 'Privilege Escalation' ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
-                                : 'bg-red-500/20 text-red-400 border-red-500/30'
-                            }`}>{v.vulnerability_type}</span>
-                          <span className="text-sm font-mono text-slate-300">{v.function_name}()</span>
+            ) : (
+              <div className="space-y-4">
+                {recentScans.map((pr, i) => {
+                  const vulns: any[] = (() => {
+                    try { return Array.isArray(pr.vulnerabilities) ? pr.vulnerabilities : JSON.parse(pr.vulnerabilities || '[]'); }
+                    catch { return []; }
+                  })();
+                  const byType: Record<string, number> = {};
+                  vulns.forEach((v: any) => { byType[v.vulnerability_type] = (byType[v.vulnerability_type] || 0) + 1; });
+                  return (
+                    <div key={i} className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md hover:border-emerald-500/20 transition-all">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-4">
+                          <div className={`mt-1 w-3 h-3 rounded-full flex-shrink-0 ${pr.status === 'Passed' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]'}`} />
+                          <div>
+                            <p className="font-semibold text-slate-200">{pr.title}</p>
+                            <p className="text-xs text-slate-500 mt-0.5">{pr.id} · {pr.time}</p>
+                          </div>
                         </div>
-                        <span className="text-xs text-slate-400 whitespace-nowrap">Confidence: <span className="text-slate-200 font-semibold">{v.confidence}%</span></span>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold border ${pr.status === 'Passed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>{pr.status}</span>
+                          {pr.score !== undefined && (
+                            <span className="text-sm font-bold text-slate-300">Score: <span className={pr.score >= 80 ? 'text-emerald-400' : 'text-red-400'}>{pr.score}</span></span>
+                          )}
+                          <button onClick={() => setSelectedScan(pr)} className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm font-medium transition-colors">View Details</button>
+                        </div>
                       </div>
-                      {v.reasoning && <p className="text-xs text-slate-400 leading-relaxed">{v.reasoning}</p>}
-                      {v.file_path && <p className="text-xs text-slate-600 mt-2 font-mono">{v.file_path}</p>}
+                      {vulns.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-slate-800/60 flex flex-wrap gap-2">
+                          {Object.entries(byType).map(([type, count]) => (
+                            <span key={type} className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${type === 'BOLA' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : type === 'IDOR' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' : type === 'Privilege Escalation' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>{type} ×{count}</span>
+                          ))}
+                        </div>
+                      )}
+                      {vulns.length === 0 && (
+                        <div className="mt-4 pt-4 border-t border-slate-800/60"><span className="text-xs text-emerald-500 font-medium">✓ No vulnerabilities detected</span></div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              );
-            })()}
-          </div>
-        </div>
-      )}
+                  );
+                })}
+              </div>
+            )}
+          </main>
+        )}
 
-      {/* Pattern def for graph background */}
-      <style>{`
-        .pattern-grid-lg {
-          background-image: linear-gradient(to right, currentColor 1px, transparent 1px),
-          linear-gradient(to bottom, currentColor 1px, transparent 1px);
-          background-size: 40px 40px;
-        }
-      `}</style>
+        {/* View Details Modal */}
+        {selectedScan && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+            onClick={() => setSelectedScan(null)}
+          >
+            <div
+              className="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Modal header */}
+              <div className="flex items-start justify-between mb-5">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-200">{selectedScan.title}</h3>
+                  <p className="text-sm text-slate-500 mt-0.5">{selectedScan.id} · {selectedScan.time}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedScan(null)}
+                  className="text-slate-500 hover:text-slate-300 text-xl leading-none px-2"
+                >✕</button>
+              </div>
+
+              {/* Score badge */}
+              <div className="flex items-center gap-3 mb-5">
+                <span className={`px-3 py-1 rounded-full text-sm font-bold border ${selectedScan.status === 'Passed'
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                  : 'bg-red-500/10 text-red-400 border-red-500/30'
+                  }`}>
+                  {selectedScan.status}
+                </span>
+                {selectedScan.issues > 0 && (
+                  <span className="text-sm text-red-400 font-medium flex items-center gap-1">
+                    <AlertTriangle size={14} /> {selectedScan.issues} Finding{selectedScan.issues > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+
+              {/* Vulnerability list */}
+              {(() => {
+                const vulns = (() => {
+                  try {
+                    const v = selectedScan.vulnerabilities;
+                    return Array.isArray(v) ? v : (typeof v === 'string' ? JSON.parse(v) : []);
+                  } catch { return []; }
+                })();
+                return vulns.length === 0 ? (
+                  <div className="text-center py-8">
+                    <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center mx-auto mb-3">
+                      <span className="text-emerald-400 text-xl">✓</span>
+                    </div>
+                    <p className="text-slate-400 text-sm">No vulnerabilities found in this scan.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {vulns.map((v: any, i: number) => (
+                      <div key={i} className="p-4 rounded-xl bg-red-950/20 border border-red-800/30 hover:border-red-600/40 transition-all">
+                        <div className="flex items-start justify-between gap-4 mb-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${v.vulnerability_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+                              : v.vulnerability_type === 'IDOR' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                                : v.vulnerability_type === 'Privilege Escalation' ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+                                  : 'bg-red-500/20 text-red-400 border-red-500/30'
+                              }`}>{v.vulnerability_type}</span>
+                            <span className="text-sm font-mono text-slate-300">{v.function_name}()</span>
+                          </div>
+                          <span className="text-xs text-slate-400 whitespace-nowrap">Confidence: <span className="text-slate-200 font-semibold">{v.confidence}%</span></span>
+                        </div>
+                        {v.reasoning && <p className="text-xs text-slate-400 leading-relaxed">{v.reasoning}</p>}
+                        {v.file_path && <p className="text-xs text-slate-600 mt-2 font-mono">{v.file_path}</p>}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
