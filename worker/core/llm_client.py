@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 MISTRAL_API_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "http://lm-proxy:8080")
 MISTRAL_MODEL = "mistralai/mistral-7b-instruct-v0.3"
 
-# Qwen - optional, gracefully fails if offline
-QWEN_API_BASE_URL = os.getenv("QWEN_API_BASE_URL", "http://host.docker.internal:1235")
-QWEN_MODEL = "qwen2.5-coder:7b"
+# Qwen - points to local LM Studio at 169.254.83.107:1234
+QWEN_API_BASE_URL = os.getenv("QWEN_API_BASE_URL", "http://169.254.83.107:1234")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen2.5-coder-7b-instruct")
 
 # Gemini - cloud validation layer
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -49,7 +49,7 @@ class GeminiClient:
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
             # Try flash first, fall back to stable gemini-pro
-            for model_name in ("gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-pro"):
+            for model_name in ("gemini-3-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-pro"):
                 try:
                     self._model = genai.GenerativeModel(model_name)
                     # Quick validate — list models to confirm key works
@@ -68,7 +68,7 @@ class GeminiClient:
             return ""
         import asyncio
         import google.generativeai as genai
-        fallbacks = ("gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-pro", "gemini-1.0-pro")
+        fallbacks = ("gemini-2.5-flash-preview", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.0-pro")
         for model_name in fallbacks:
             try:
                 model = genai.GenerativeModel(model_name)

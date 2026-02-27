@@ -6,8 +6,8 @@ import httpx
 
 router = APIRouter()
 
-MISTRAL_API_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "http://host.docker.internal:1234/v1")
-QWEN_API_BASE_URL = os.getenv("QWEN_API_BASE_URL", "http://host.docker.internal:1235/v1")
+MISTRAL_API_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "http://lm-proxy:8080")
+QWEN_API_BASE_URL = os.getenv("QWEN_API_BASE_URL", "http://169.254.83.107:1234")
 
 DB_USER = os.getenv("POSTGRES_USER", "sentinel_db_admin")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "sentinel_db_password")

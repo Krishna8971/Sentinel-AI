@@ -59,6 +59,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  qwen-proxy:
+    build: ./qwen-proxy
+    container_name: sentinel_qwen_proxy
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   backend:
     build: ./backend
     container_name: sentinel_backend
@@ -93,7 +100,7 @@ services:
       - NEO4J_PASSWORD=sentinel_neo4j_password
       - CELERY_BROKER_URL=redis://redis:6379/0
       - MISTRAL_API_BASE_URL=http://lm-proxy:8080
-      - QWEN_API_BASE_URL=http://host.docker.internal:1235
+      - QWEN_API_BASE_URL=http://qwen-proxy:8080
     env_file:
       - .env
     depends_on:
@@ -102,6 +109,7 @@ services:
       - neo4j
       - backend
       - lm-proxy
+      - qwen-proxy
 
   frontend:
     build: ./frontend
