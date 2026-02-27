@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from .api import github, dashboard, scan
+from .api import github, dashboard, scan, graph
 from .models.scan_result import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(github.router, prefix="/api/github", tags=["github"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(scan.router, prefix="/api/scan", tags=["scan"])
+app.include_router(graph.router, prefix="/api/graph", tags=["graph"])
 
 @app.get('/')
 def read_root():

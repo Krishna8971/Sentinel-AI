@@ -1,11 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Activity, ShieldAlert, GitBranch, Network, Settings, TerminalSquare, AlertTriangle } from 'lucide-react';
 
 function App() {
   const [activeTab, setActiveTab] = useState('overview');
   const [stats, setStats] = useState({ score: 100, drift: 0, exploits_prevented: 0 });
   const [recentScans, setRecentScans] = useState<any[]>([]);
-  const [vulnerabilities, setVulnerabilities] = useState<any[]>([]);
 
   const [isConfigured, setIsConfigured] = useState(() => {
     return localStorage.getItem('sentinel_configured') === 'true';
@@ -16,6 +15,9 @@ function App() {
   const [scanProgress, setScanProgress] = useState(0);
   const [, setPrevScanCount] = useState(-1);
   const [selectedScan, setSelectedScan] = useState<any>(null);
+  const [graphData, setGraphData] = useState<{ nodes: any[], stats: any } | null>(null);
+  const [graphSearch, setGraphSearch] = useState('');
+  const scanBaselineRef = useRef<number>(0);
 
   // Only fetches live scan data — no AI status spam
   const fetchDashboard = () => {
@@ -29,7 +31,7 @@ function App() {
         });
       }
     }).catch(() => { });
-    fetch('/api/dashboard/vulnerabilities').then(r => r.json()).then(d => { if (Array.isArray(d)) setVulnerabilities(d); }).catch(() => { });
+    fetch('/api/dashboard/vulnerabilities').then(r => r.json()).then(d => { if (Array.isArray(d)) { } }).catch(() => { });
   };
 
   const clearHistory = () => {
@@ -38,50 +40,51 @@ function App() {
       .then(() => {
         setStats({ score: 100, drift: 0, exploits_prevented: 0 });
         setRecentScans([]);
-        setVulnerabilities([]);
         setScanProgress(0);
         localStorage.removeItem('sentinel_configured');
         setIsConfigured(false);
       })
       .catch(() => {
-        // Reset locally anyway
         setStats({ score: 100, drift: 0, exploits_prevented: 0 });
         setRecentScans([]);
-        setVulnerabilities([]);
         setScanProgress(0);
         localStorage.removeItem('sentinel_configured');
         setIsConfigured(false);
       });
   };
 
-  // While scanning: poll every 4s for results AND advance the bar.
-  // The instant recentScans count grows, the bar is dismissed.
+  // Poll every 3s ONLY while a scan is in progress (isScanning = true).
+  // Using a ref for the baseline count keeps the interval callback fresh — no stale closures.
   useEffect(() => {
-    if (scanProgress <= 0) return;
+    if (!isScanning) return;
+
+    // Kick off the progress animation from 2%
+    setScanProgress(2);
 
     const tick = setInterval(() => {
-      // Advance bar smoothly (caps at 98 so it never "finishes" on its own)
-      setScanProgress(p => (p >= 98 ? 98 : Math.min(98, p + (100 / 90) * 4)));
+      // Advance bar (caps at 98 — never auto-completes on its own)
+      setScanProgress(p => Math.min(98, p + (100 / 90) * 3));
 
       // Check if backend has new results
       fetch('/api/dashboard/recent_scans')
         .then(r => r.json())
-        .then(d => {
+        .then((d: any[]) => {
           if (!Array.isArray(d)) return;
-          setRecentScans(prev => {
-            if (d.length > prev.length) {
-              // New results arrived — dismiss bar and refresh everything
-              setScanProgress(0);
-              fetchDashboard();
-            }
-            return d;
-          });
+          // Compare against the stable ref — no stale closure issue
+          if (d.length > scanBaselineRef.current) {
+            clearInterval(tick);
+            setIsScanning(false);
+            setScanProgress(0);
+            setRecentScans(d);
+            // Full refresh of stats and vulnerabilities
+            fetchDashboard();
+          }
         })
         .catch(() => { });
-    }, 4000);
+    }, 3000);
 
     return () => clearInterval(tick);
-  }, [scanProgress > 0]);
+  }, [isScanning]);
 
   useEffect(() => {
     // Fetch everything once on boot — no polling
@@ -121,18 +124,17 @@ function App() {
             e.preventDefault();
             if (!repoUrl) return;
             setIsScanning(true);
+            // Capture baseline scan count NOW so polling can detect the new result
+            scanBaselineRef.current = recentScans.length;
             fetch('/api/scan', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ github_url: repoUrl })
             }).then(() => {
-              setIsScanning(false);
-              setScanProgress(2); // kick off the progress bar
+              // scanProgress is now driven by the isScanning effect
               setIsConfigured(true);
               localStorage.setItem('sentinel_configured', 'true');
             }).catch(() => {
-              setIsScanning(false);
-              setScanProgress(2);
               setIsConfigured(true);
               localStorage.setItem('sentinel_configured', 'true');
             });
@@ -182,7 +184,7 @@ function App() {
             Overview
           </button>
           <button
-            onClick={() => setActiveTab('graph')}
+            onClick={() => { setActiveTab('graph'); setGraphData(null); fetch('/api/graph/data').then(r => r.json()).then(setGraphData).catch(() => { }); }}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'graph' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
           >
             <Network size={18} />
@@ -264,139 +266,184 @@ function App() {
         )}
 
         {/* Dashboard Content */}
-        <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
-
-          {/* Top Stats Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl hover:border-emerald-500/30 transition-all group overflow-hidden relative">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-emerald-500/10 rounded-full blur-xl group-hover:bg-emerald-500/20 transition-all"></div>
-              <h3 className="text-slate-400 text-sm font-medium mb-2">Auth Integrity Score</h3>
-              <div className="flex items-end gap-3">
-                <span className="text-5xl font-bold text-emerald-400">{stats.score}</span>
-                <span className="text-emerald-500 text-sm mb-1 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-md">+4 from last week</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl hover:border-blue-500/30 transition-all group overflow-hidden relative">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-blue-500/10 rounded-full blur-xl group-hover:bg-blue-500/20 transition-all"></div>
-              <h3 className="text-slate-400 text-sm font-medium mb-2">Drift Delta</h3>
-              <div className="flex items-end gap-3">
-                <span className="text-5xl font-bold text-blue-400">{stats.drift}</span>
-                <span className="text-slate-400 text-sm mb-1 font-medium">routes modified</span>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl hover:border-red-500/30 transition-all group overflow-hidden relative">
-              <div className="absolute -right-6 -top-6 w-24 h-24 bg-red-500/10 rounded-full blur-xl group-hover:bg-red-500/20 transition-all"></div>
-              <h3 className="text-slate-400 text-sm font-medium mb-2">Active Exploits Prevented</h3>
-              <div className="flex items-end gap-3">
-                <span className="text-5xl font-bold text-slate-100">{stats.exploits_prevented}</span>
-                <span className="text-red-400 text-sm mb-1 font-medium flex items-center gap-1 bg-red-400/10 px-2 py-0.5 rounded-md"><AlertTriangle size={14} /> 1 BOLA attempt</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Graph Visualization Mock */}
-          <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl h-96 flex flex-col relative overflow-hidden group">
-            <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-emerald-900/10 to-transparent opacity-0 group-hover:opacity-100 transition-duration-500"></div>
-            <div className="flex justify-between items-center mb-6">
+        {activeTab === 'graph' ? (
+          /* ── AUTH GRAPH TAB ── */
+          <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
+            <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-lg font-medium text-slate-200">Authorization Graph</h3>
-                <p className="text-sm text-slate-500">Role &rarr; Route &rarr; Resource Mapping</p>
+                <h3 className="text-xl font-semibold text-slate-200">Authorization Map</h3>
+                <p className="text-sm text-slate-500 mt-1">All scanned functions/routes — color-coded by vulnerability status</p>
               </div>
-              <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sm rounded-lg transition-colors border border-slate-700 font-medium">
-                Open Full Graph
-              </button>
+              <input
+                type="text"
+                placeholder="Search functions..."
+                value={graphSearch}
+                onChange={e => setGraphSearch(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 w-64"
+              />
             </div>
 
-            <div className="flex-1 border border-slate-800/50 rounded-xl bg-slate-950/50 flex items-center justify-center relative overflow-hidden">
-              {/* Mock Graph Visuals */}
-              <div className="absolute inset-0 pattern-grid-lg text-slate-800/20 opacity-50"></div>
-              <div className="relative z-10 flex items-center gap-8 text-sm font-medium">
-                <div className="px-4 py-2 bg-blue-500/10 border border-blue-500/40 text-blue-400 rounded-lg shadow-[0_0_20px_rgba(59,130,246,0.1)]">User Role</div>
-                <div className="h-px w-16 bg-gradient-to-r from-blue-500/40 to-slate-600 relative">
-                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-slate-500"></div>
+            {/* Stats row */}
+            {graphData && (
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 text-center">
+                  <div className="text-3xl font-bold text-slate-200">{graphData.stats.total}</div>
+                  <div className="text-xs text-slate-500 mt-1">Total Analyzed</div>
                 </div>
-                <div className="px-4 py-2 bg-slate-800 border border-slate-700 text-slate-300 rounded-lg">GET /api/user/{'{id}'}</div>
-                <div className="h-px w-16 bg-gradient-to-r from-slate-600 to-emerald-500/40 relative">
-                  <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"></div>
+                <div className="bg-red-950/30 border border-red-800/30 rounded-xl p-4 text-center">
+                  <div className="text-3xl font-bold text-red-400">{graphData.stats.vulnerable}</div>
+                  <div className="text-xs text-slate-500 mt-1">Vulnerable</div>
                 </div>
-                <div className="px-4 py-2 bg-emerald-500/10 border border-emerald-500/40 text-emerald-400 rounded-lg shadow-[0_0_20px_rgba(16,185,129,0.1)]">User Profile Data</div>
+                <div className="bg-emerald-950/20 border border-emerald-800/20 rounded-xl p-4 text-center">
+                  <div className="text-3xl font-bold text-emerald-400">{graphData.stats.clean}</div>
+                  <div className="text-xs text-slate-500 mt-1">Clean</div>
+                </div>
               </div>
+            )}
 
-              {/* Exploit path mock */}
-              <div className="absolute top-1/4 left-1/3 w-1/3 flex items-center gap-4 text-xs font-medium opacity-60 hover:opacity-100 transition-opacity cursor-pointer">
-                <div className="px-3 py-1 bg-red-500/10 border border-red-500/40 text-red-400 rounded-lg">Suspicious Role</div>
-                <svg className="w-16 h-8 text-red-500/60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+            {/* Node cards */}
+            {!graphData ? (
+              <div className="flex items-center justify-center h-48 text-slate-500 text-sm">
+                <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mr-3"></span>
+                Loading graph data...
               </div>
-            </div>
-          </div>
-
-          {/* Recent Findings */}
-          <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl">
-            <h3 className="text-lg font-medium text-slate-200 mb-6">Recent PR Core Analysis</h3>
-            <div className="space-y-4">
-              {recentScans.map((pr, i) => (
-                <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-slate-800/30 border border-slate-800 hover:bg-slate-800/50 transition-colors">
-                  <div className="flex items-center gap-4">
-                    <div className={`w-2 h-2 rounded-full ${pr.status === 'Passed' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]'}`}></div>
-                    <div>
-                      <p className="font-medium text-slate-200">{pr.title} <span className="text-slate-500 text-sm font-normal ml-2">{pr.id}</span></p>
-                      <p className="text-sm text-slate-500 mt-1">{pr.time}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-6">
-                    {pr.issues > 0 ? (
-                      <span className="flex items-center gap-1.5 text-sm font-medium text-red-400 bg-red-400/10 px-3 py-1 rounded-full"><AlertTriangle size={14} /> {pr.issues} Findings</span>
-                    ) : (
-                      <span className="text-sm text-emerald-500 font-medium">Clean</span>
-                    )}
-                    <button
-                      onClick={() => setSelectedScan(pr)}
-                      className="text-emerald-400 hover:text-emerald-300 text-sm font-medium transition-colors"
-                    >
-                      View Details →
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Vulnerabilities Panel */}
-          <div className="bg-slate-900/40 border border-red-900/30 rounded-2xl p-6 backdrop-blur-md shadow-xl">
-            <h3 className="text-lg font-medium text-slate-200 mb-2 flex items-center gap-2">
-              <AlertTriangle size={18} className="text-red-400" />
-              Detected Vulnerabilities
-              {vulnerabilities.length > 0 && (
-                <span className="ml-2 px-2 py-0.5 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30">{vulnerabilities.length}</span>
-              )}
-            </h3>
-            {vulnerabilities.length === 0 ? (
-              <p className="text-slate-500 text-sm mt-4">No vulnerabilities detected yet. Run a scan to see findings here.</p>
+            ) : graphData.nodes.length === 0 ? (
+              <div className="text-center py-16 text-slate-500">
+                <Network size={40} className="mx-auto mb-4 opacity-30" />
+                <p>No scan data yet. Run a scan to populate the auth graph.</p>
+              </div>
             ) : (
-              <div className="space-y-3 mt-4">
-                {vulnerabilities.map((v, i) => (
-                  <div key={i} className="p-4 rounded-xl bg-red-950/20 border border-red-800/30 hover:border-red-600/40 transition-all">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full mr-2 ${v.vulnerability_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
-                          {v.vulnerability_type}
-                        </span>
-                        <span className="text-sm font-mono text-slate-300">{v.method} {v.path}</span>
-                        <span className="ml-2 text-xs text-slate-500">in {v.function_name}()</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {graphData.nodes
+                  .filter(n => !graphSearch || n.label.toLowerCase().includes(graphSearch.toLowerCase()) || n.function_name.toLowerCase().includes(graphSearch.toLowerCase()))
+                  .map((node: any, i: number) => (
+                    <div key={i} className={`p-4 rounded-xl border transition-all hover:scale-[1.01] ${node.status === 'vulnerable'
+                      ? 'bg-red-950/20 border-red-800/40 hover:border-red-600/60'
+                      : 'bg-emerald-950/10 border-emerald-800/20 hover:border-emerald-600/40'
+                      }`}>
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${node.vuln_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+                          : node.vuln_type === 'IDOR' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                            : node.vuln_type === 'Privilege Escalation' ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+                              : node.status === 'vulnerable' ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                                : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          }`}>{node.status === 'vulnerable' ? node.vuln_type : 'Clean'}</span>
+                        {node.status === 'vulnerable' && (
+                          <span className="text-xs text-slate-400 whitespace-nowrap">{node.confidence}%</span>
+                        )}
                       </div>
-                      <span className="text-xs text-slate-400 whitespace-nowrap">Confidence: {v.confidence}%</span>
+                      <p className="text-sm font-mono text-slate-200 truncate" title={node.label}>{node.label}</p>
+                      <p className="text-xs text-slate-500 mt-1 truncate">{node.function_name}()</p>
+                      {node.reasoning && <p className="text-xs text-slate-500 mt-2 leading-relaxed line-clamp-2">{node.reasoning}</p>}
+                      <p className="text-xs text-slate-600 mt-2 truncate font-mono">{node.file_path || node.repo}</p>
                     </div>
-                    {v.reasoning && <p className="text-xs text-slate-400 mt-2 leading-relaxed">{v.reasoning}</p>}
-                    <p className="text-xs text-slate-600 mt-1">Repo: {v.repo} • {v.scan_time}</p>
+                  ))}
+              </div>
+            )}
+          </main>
+        ) : (
+          <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
+
+            {/* Top Stats Row */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl hover:border-emerald-500/30 transition-all group overflow-hidden relative">
+                <div className="absolute -right-6 -top-6 w-24 h-24 bg-emerald-500/10 rounded-full blur-xl group-hover:bg-emerald-500/20 transition-all"></div>
+                <h3 className="text-slate-400 text-sm font-medium mb-2">Auth Integrity Score</h3>
+                <div className="flex items-end gap-3">
+                  <span className="text-5xl font-bold text-emerald-400">{stats.score}</span>
+                  <span className="text-emerald-500 text-sm mb-1 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-md">+4 from last week</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl hover:border-blue-500/30 transition-all group overflow-hidden relative">
+                <div className="absolute -right-6 -top-6 w-24 h-24 bg-blue-500/10 rounded-full blur-xl group-hover:bg-blue-500/20 transition-all"></div>
+                <h3 className="text-slate-400 text-sm font-medium mb-2">Drift Delta</h3>
+                <div className="flex items-end gap-3">
+                  <span className="text-5xl font-bold text-blue-400">{stats.drift}</span>
+                  <span className="text-slate-400 text-sm mb-1 font-medium">routes modified</span>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl hover:border-red-500/30 transition-all group overflow-hidden relative">
+                <div className="absolute -right-6 -top-6 w-24 h-24 bg-red-500/10 rounded-full blur-xl group-hover:bg-red-500/20 transition-all"></div>
+                <h3 className="text-slate-400 text-sm font-medium mb-2">Active Exploits Prevented</h3>
+                <div className="flex items-end gap-3">
+                  <span className="text-5xl font-bold text-slate-100">{stats.exploits_prevented}</span>
+                  <span className="text-red-400 text-sm mb-1 font-medium flex items-center gap-1 bg-red-400/10 px-2 py-0.5 rounded-md"><AlertTriangle size={14} /> 1 BOLA attempt</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Graph Visualization Mock */}
+            <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl h-96 flex flex-col relative overflow-hidden group">
+              <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-emerald-900/10 to-transparent opacity-0 group-hover:opacity-100 transition-duration-500"></div>
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-lg font-medium text-slate-200">Authorization Graph</h3>
+                  <p className="text-sm text-slate-500">Role &rarr; Route &rarr; Resource Mapping</p>
+                </div>
+                <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-sm rounded-lg transition-colors border border-slate-700 font-medium">
+                  Open Full Graph
+                </button>
+              </div>
+
+              <div className="flex-1 border border-slate-800/50 rounded-xl bg-slate-950/50 flex items-center justify-center relative overflow-hidden">
+                {/* Mock Graph Visuals */}
+                <div className="absolute inset-0 pattern-grid-lg text-slate-800/20 opacity-50"></div>
+                <div className="relative z-10 flex items-center gap-8 text-sm font-medium">
+                  <div className="px-4 py-2 bg-blue-500/10 border border-blue-500/40 text-blue-400 rounded-lg shadow-[0_0_20px_rgba(59,130,246,0.1)]">User Role</div>
+                  <div className="h-px w-16 bg-gradient-to-r from-blue-500/40 to-slate-600 relative">
+                    <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-slate-500"></div>
+                  </div>
+                  <div className="px-4 py-2 bg-slate-800 border border-slate-700 text-slate-300 rounded-lg">GET /api/user/{'{id}'}</div>
+                  <div className="h-px w-16 bg-gradient-to-r from-slate-600 to-emerald-500/40 relative">
+                    <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"></div>
+                  </div>
+                  <div className="px-4 py-2 bg-emerald-500/10 border border-emerald-500/40 text-emerald-400 rounded-lg shadow-[0_0_20px_rgba(16,185,129,0.1)]">User Profile Data</div>
+                </div>
+
+                {/* Exploit path mock */}
+                <div className="absolute top-1/4 left-1/3 w-1/3 flex items-center gap-4 text-xs font-medium opacity-60 hover:opacity-100 transition-opacity cursor-pointer">
+                  <div className="px-3 py-1 bg-red-500/10 border border-red-500/40 text-red-400 rounded-lg">Suspicious Role</div>
+                  <svg className="w-16 h-8 text-red-500/60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+                </div>
+              </div>
+            </div>
+
+            {/* Recent Findings */}
+            <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-6 backdrop-blur-md shadow-xl">
+              <h3 className="text-lg font-medium text-slate-200 mb-6">Recent PR Core Analysis</h3>
+              <div className="space-y-4">
+                {recentScans.map((pr, i) => (
+                  <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-slate-800/30 border border-slate-800 hover:bg-slate-800/50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-2 h-2 rounded-full ${pr.status === 'Passed' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]'}`}></div>
+                      <div>
+                        <p className="font-medium text-slate-200">{pr.title} <span className="text-slate-500 text-sm font-normal ml-2">{pr.id}</span></p>
+                        <p className="text-sm text-slate-500 mt-1">{pr.time}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6">
+                      {pr.issues > 0 ? (
+                        <span className="flex items-center gap-1.5 text-sm font-medium text-red-400 bg-red-400/10 px-3 py-1 rounded-full"><AlertTriangle size={14} /> {pr.issues} Findings</span>
+                      ) : (
+                        <span className="text-sm text-emerald-500 font-medium">Clean</span>
+                      )}
+                      <button
+                        onClick={() => setSelectedScan(pr)}
+                        className="text-emerald-400 hover:text-emerald-300 text-sm font-medium transition-colors"
+                      >
+                        View Details →
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
-          </div>
+            </div>
 
-        </main>
+
+          </main>
+        )}
       </div>
 
       {/* View Details Modal */}
