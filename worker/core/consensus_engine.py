@@ -1,137 +1,142 @@
 import asyncio
 import json
-from typing import Dict, Any, List
-from core.llm_client import qwen_client, mistral_client
+import logging
+import re
+from typing import Dict, Any, Optional
+from core.llm_client import mistral_client, qwen_client, gemini_client
 
-DETECTION_PROMPT = """
-You are an expert security engineer analyzing Python FastAPI application authorization configurations.
-Given the following endpoint metadata, detect if there are potential BOLA (Broken Object Level Authorization), 
-Privilege Escalation, or missing authorization guards.
+logger = logging.getLogger(__name__)
 
-ENDPOINT DATA:
-Function Name: {function_name}
-HTTP Method: {method}
-Path: {path}
-Guards/Depends: {guards}
-Arguments: {arguments}
+DETECTION_PROMPT = """Security analysis task. Analyze this Python function for authorization vulnerabilities.
 
-SOURCE CODE:
+Vulnerability types (pick ONE that fits best, or None):
+- BOLA: accesses DB object by user-supplied ID without ownership check
+- IDOR: user-supplied param references object without auth check
+- Privilege Escalation: changes role/permission from user input without admin check
+- Missing Role Guard: HTTP endpoint with no Depends()/role check, exposes sensitive data
+- Missing Authentication: no identity verification before data access
+- None: code is secure
+
+Function: {function_name} | Method: {method} | Path: {path}
+Guards: {guards} | Args: {arguments}
+
+CODE:
 {code}
 
-Analyze the endpoint. Provide exactly a JSON response in the following schema completely without markdown codeblocks:
-{{
-  "has_vulnerability": true/false,
-  "vulnerability_type": "BOLA" | "Privilege Escalation" | "None",
-  "confidence": 0-100,
-  "reasoning": "string"
-}}
+Reply ONLY with this JSON (no markdown, one short sentence for reasoning):
+{{"has_vulnerability": true, "vulnerability_type": "BOLA", "confidence": 85, "reasoning": "sentence"}}
 """
 
-JUDGE_PROMPT = """
-You are a senior security architect acting as a consensus judge.
-Two AI agents (Qwen and Mistral) analyzed a FastAPI endpoint for authorization vulnerabilities and disagreed.
+GEMINI_VALIDATION_PROMPT = """You are a security validation engine. Analyze findings from two AI models.
+Produce a final verdict. Be conservative — only confirm with solid evidence.
 
-Model A (Qwen) Analysis:
-{qwen_analysis}
+CODE:
+{code}
 
-Model B (Mistral) Analysis:
-{mistral_analysis}
+MISTRAL: {mistral_result}
+QWEN: {qwen_result}
 
-Review the conflicting analysis and provide the final, authoritative judgement in the following JSON format without markdown codeblocks:
-{{
-  "resolved_vulnerability": true/false,
-  "vulnerability_type": "BOLA" | "Privilege Escalation" | "None",
-  "confidence": 0-100,
-  "reasoning": "string explaining why one model was correct over the other"
-}}
+Output ONLY this JSON (no markdown):
+{{"has_vulnerability": true, "vulnerability_type": "string", "confidence": 0, "reasoning": "sentence"}}
 """
 
-async def analyze_endpoint_parallel(endpoint_data: Dict[str, Any]) -> Dict[str, Any]:
+NULL_RESULT = {"has_vulnerability": False, "vulnerability_type": "None", "confidence": 0, "reasoning": "No issue found"}
+
+
+def _parse_json(text: str) -> Optional[Dict[str, Any]]:
+    """Extract JSON from model output. Returns None on any failure."""
+    if not text or not text.strip():
+        return None
+    try:
+        # Strip markdown fences
+        text = re.sub(r"^```[a-z]*\n?", "", text.strip(), flags=re.IGNORECASE)
+        text = re.sub(r"```$", "", text)
+        # Find the first JSON object in the response
+        match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+        if match:
+            obj = json.loads(match.group())
+            # Validate required fields are present
+            if "has_vulnerability" in obj:
+                return obj
+    except Exception:
+        pass
+    return None
+
+
+async def _call_model_once(client, prompt: str, model_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Single-shot model call. No retries. Returns None on ANY failure.
+    This guarantees we never get stuck in an error loop.
+    """
+    try:
+        text = await client.generate_completion(prompt)
+        result = _parse_json(text)
+        if result:
+            logger.info(f"[{model_name}] ✓ {result.get('vulnerability_type')} conf={result.get('confidence')}")
+        else:
+            logger.warning(f"[{model_name}] returned unparseable response: {str(text)[:100]}")
+        return result
+    except asyncio.TimeoutError:
+        logger.warning(f"[{model_name}] timed out — skipping")
+        return None
+    except Exception as e:
+        # Log with repr() so empty-string exceptions still show their type
+        logger.warning(f"[{model_name}] failed ({repr(e)}) — skipping")
+        return None
+
+
+async def analyze_endpoint(endpoint: Dict[str, Any]) -> Dict[str, Any]:
+    code = endpoint.get("code", "")
+    if not code.strip():
+        return {"status": "skipped", "result": NULL_RESULT}
+
     prompt = DETECTION_PROMPT.format(
-        function_name=endpoint_data["function_name"],
-        method=endpoint_data["method"],
-        path=endpoint_data["path"],
-        guards=", ".join(endpoint_data["guards"]),
-        arguments=", ".join(endpoint_data["arguments"]),
-        code=endpoint_data.get("code", "Source code not available")
+        function_name=endpoint.get("function_name", ""),
+        method=endpoint.get("method", "FUNCTION"),
+        path=endpoint.get("path", ""),
+        guards=endpoint.get("guards", []),
+        arguments=endpoint.get("arguments", []),
+        code=code
     )
-    
-    # Run Qwen and Mistral in parallel
-    qwen_task = asyncio.create_task(qwen_client.generate_completion(prompt))
-    mistral_task = asyncio.create_task(mistral_client.generate_completion(prompt))
-    
-    qwen_result = None
-    mistral_result = None
-    
-    try:
-        qwen_result = await qwen_task
-    except ConnectionError:
-        print("Qwen model unavailable. Attempting fallback...")
-        
-    try:
-        mistral_result = await mistral_task
-    except ConnectionError:
-        print("Mistral model unavailable. Attempting fallback...")
-        
-    if not qwen_result and not mistral_result:
-        return {"status": "error", "message": "CRITICAL: Both Mistral and Qwen AI nodes are utterly unreachable."}
-        
-    # JSON Parsing
-    def _parse(res: str) -> dict:
-        if not res: return None
-        try:
-            return json.loads(res.strip('`').strip('json').strip())
-        except json.JSONDecodeError:
-            return None
-            
-    qwen_json = _parse(qwen_result)
-    mistral_json = _parse(mistral_result)
-    
-    # Fallback Logic
-    if qwen_json and not mistral_json:
-        return {
-            "status": "fallback_qwen",
-            "result": qwen_json
-        }
-    elif mistral_json and not qwen_json:
-        return {
-            "status": "fallback_mistral",
-            "result": mistral_json
-        }
-        
-    if not qwen_json and not mistral_json:
-         return {"status": "error", "message": "Models responded but both failed to output valid JSON"}
 
-    # Consensus Logic
-    if qwen_json.get("has_vulnerability") == mistral_json.get("has_vulnerability") and \
-       qwen_json.get("vulnerability_type") == mistral_json.get("vulnerability_type"):
-        # They agree
-        return {
-            "status": "consensus",
-            "result": qwen_json
-        }
-    
-    # Needs Judge
-    judge_prompt = JUDGE_PROMPT.format(
-        qwen_analysis=json.dumps(qwen_json, indent=2),
-        mistral_analysis=json.dumps(mistral_json, indent=2)
+    # Step 1: Mistral and Qwen in parallel — each has exactly ONE attempt, no retries
+    mistral_result, qwen_result = await asyncio.gather(
+        _call_model_once(mistral_client, prompt, "Mistral"),
+        _call_model_once(qwen_client, prompt, "Qwen"),
+        return_exceptions=False   # exceptions returned as None via _call_model_once
     )
-    
-    # Try mistral first as judge, fallback to qwen
-    judge_result = None
-    try:
-        judge_result = await mistral_client.generate_completion(judge_prompt)
-    except ConnectionError:
+
+    # Step 2: Gemini validation (only if at least one model returned a finding)
+    gemini_result = None
+    any_finding = mistral_result or qwen_result
+    if gemini_client.available and any_finding:
+        val_prompt = GEMINI_VALIDATION_PROMPT.format(
+            code=code,
+            mistral_result=json.dumps(mistral_result) if mistral_result else "unavailable",
+            qwen_result=json.dumps(qwen_result) if qwen_result else "unavailable"
+        )
         try:
-            judge_result = await qwen_client.generate_completion(judge_prompt)
-        except ConnectionError:
-            pass
-    
-    try:
-        judge_json = json.loads(judge_result.strip('`').strip('json').strip())
-        return {
-            "status": "judged",
-            "result": judge_json
-        }
-    except json.JSONDecodeError:
-        return {"status": "error", "message": "Judge failed to output valid JSON"}
+            gemini_text = await gemini_client.validate(val_prompt)
+            gemini_result = _parse_json(gemini_text)
+            if gemini_result:
+                logger.info(f"[Gemini] ✓ validated: {gemini_result.get('vulnerability_type')}")
+        except Exception as e:
+            logger.warning(f"[Gemini] failed ({repr(e)})")
+
+    # Step 3: Final decision — Gemini trumps if confident, else Mistral wins over Qwen
+    if gemini_result and isinstance(gemini_result.get("confidence"), (int, float)) and gemini_result["confidence"] > 50:
+        return {"status": "gemini_validated", "result": gemini_result}
+
+    # Pick the highest-confidence finding from Mistral/Qwen
+    candidates = [r for r in [mistral_result, qwen_result] if r and r.get("has_vulnerability") and r.get("confidence", 0) > 55]
+    if candidates:
+        best = max(candidates, key=lambda r: r.get("confidence", 0))
+        return {"status": "consensus", "result": best}
+
+    # Nothing found / all unavailable
+    return {"status": "clean", "result": NULL_RESULT}
+
+
+# Backward compat alias
+async def analyze_endpoint_parallel(endpoint: Dict[str, Any]) -> Dict[str, Any]:
+    return await analyze_endpoint(endpoint)

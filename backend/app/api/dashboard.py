@@ -2,8 +2,12 @@ from fastapi import APIRouter
 from datetime import datetime, timedelta
 import os
 import asyncpg
+import httpx
 
 router = APIRouter()
+
+MISTRAL_API_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "http://host.docker.internal:1234/v1")
+QWEN_API_BASE_URL = os.getenv("QWEN_API_BASE_URL", "http://host.docker.internal:1235/v1")
 
 DB_USER = os.getenv("POSTGRES_USER", "sentinel_db_admin")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "sentinel_db_password")
@@ -39,11 +43,11 @@ async def get_dashboard_stats():
             if not conn.is_closed():
                 await conn.close()
 
-    # Fallback default values if db is empty or unreachable
+    # Return zeroed default values if db is empty or unreachable
     return {
-        "score": 92,
-        "drift": 2,
-        "exploits_prevented": 14 
+        "score": 100, # A safe default score
+        "drift": 0,
+        "exploits_prevented": 0 
     }
 
 @router.get("/recent_scans")
@@ -70,9 +74,65 @@ async def get_recent_scans():
             if not conn.is_closed():
                 await conn.close()
                 
-    # Fallback to mock data
-    return [
-        { "id": '#420', "status": 'Passed', "title": 'Refactor user routing', "issues": 0, "time": '2h ago' },
-        { "id": '#419', "status": 'Blocked', "title": 'Add admin dashboard metrics', "issues": 2, "time": '5h ago' },
-        { "id": '#418', "status": 'Passed', "title": 'Update dependency injection', "issues": 0, "time": '1d ago' },
-    ]
+    # Return empty list if no scans exist
+    return []
+
+@router.get("/vulnerabilities")
+async def get_vulnerabilities():
+    conn = await get_db_connection()
+    if conn:
+        try:
+            rows = await conn.fetch(
+                'SELECT repo_name, vulnerabilities, timestamp, auth_integrity_score, severity FROM scan_results ORDER BY timestamp DESC LIMIT 10'
+            )
+            await conn.close()
+            result = []
+            for row in rows:
+                vulns = row['vulnerabilities']
+                if isinstance(vulns, str):
+                    import json
+                    vulns = json.loads(vulns)
+                for v in (vulns or []):
+                    v['repo'] = row['repo_name']
+                    v['scan_score'] = row['auth_integrity_score']
+                    v['scan_time'] = row['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                    result.append(v)
+            return result
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
+            if not conn.is_closed():
+                await conn.close()
+    return []
+
+@router.delete("/reset")
+async def reset_dashboard_stats():
+    conn = await get_db_connection()
+    if conn:
+        try:
+            await conn.execute('DELETE FROM scan_results')
+            await conn.close()
+            return {"status": "success", "message": "Database wiped."}
+        except Exception as e:
+            if not conn.is_closed():
+                await conn.close()
+            return {"status": "error", "message": str(e)}
+    return {"status": "error", "message": "Database disconnected"}
+
+@router.get("/ai_status")
+async def get_ai_status():
+    async def check_node(url: str):
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(f"{url}/models", timeout=3.0)
+                return res.status_code == 200
+        except Exception:
+            return False
+            
+    mistral_ok = await check_node(MISTRAL_API_BASE_URL)
+    qwen_ok = await check_node(QWEN_API_BASE_URL)
+    
+    return {
+        "mistral": "online" if mistral_ok else "offline",
+        "qwen": "online" if qwen_ok else "offline"
+    }

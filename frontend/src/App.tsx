@@ -3,31 +3,46 @@ import { Activity, ShieldAlert, GitBranch, Network, Settings, TerminalSquare, Al
 
 function App() {
   const [activeTab, setActiveTab] = useState('overview');
-  const [stats, setStats] = useState({ score: 92, drift: 2, exploits_prevented: 14 });
-  const [recentScans, setRecentScans] = useState([
-    { id: '#420', status: 'Passed', title: 'Refactor user routing', issues: 0, time: '2h ago' },
-    { id: '#419', status: 'Blocked', title: 'Add admin dashboard metrics', issues: 2, time: '5h ago' },
-    { id: '#418', status: 'Passed', title: 'Update dependency injection', issues: 0, time: '1d ago' },
-  ]);
+  const [stats, setStats] = useState({ score: 100, drift: 0, exploits_prevented: 0 });
+  const [recentScans, setRecentScans] = useState<any[]>([]);
+  const [vulnerabilities, setVulnerabilities] = useState<any[]>([]);
 
   const [isConfigured, setIsConfigured] = useState(() => {
     return localStorage.getItem('sentinel_configured') === 'true';
   });
   const [repoUrl, setRepoUrl] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+  const [aiStatus, setAiStatus] = useState({ mistral: 'checking', qwen: 'checking' });
+  const [scanProgress, setScanProgress] = useState(0);
+  const [, setPrevScanCount] = useState(-1);
+
+  const fetchAll = () => {
+    fetch('/api/dashboard/stats').then(r => r.json()).then(setStats).catch(() => { });
+    fetch('/api/dashboard/recent_scans').then(r => r.json()).then(d => {
+      if (Array.isArray(d)) {
+        setRecentScans(d);
+        // When a new scan result appears, dismiss the progress bar
+        setPrevScanCount(prev => {
+          if (prev >= 0 && d.length > prev) setScanProgress(0);
+          return d.length;
+        });
+      }
+    }).catch(() => { });
+    fetch('/api/dashboard/vulnerabilities').then(r => r.json()).then(d => { if (Array.isArray(d)) setVulnerabilities(d); }).catch(() => { });
+    fetch('/api/dashboard/ai_status').then(r => r.json()).then(setAiStatus).catch(() => { });
+  };
+
+  // Advance progress bar smoothly over 90s while scanning
+  useEffect(() => {
+    if (scanProgress <= 0 || scanProgress >= 98) return;
+    const t = setTimeout(() => setScanProgress(p => Math.min(98, p + (100 / 90))), 1000);
+    return () => clearTimeout(t);
+  }, [scanProgress]);
 
   useEffect(() => {
-    // Fetch dashboard stats from backend
-    fetch('/api/dashboard/stats')
-      .then(res => res.json())
-      .then(data => setStats(data))
-      .catch(err => console.error("Error fetching stats:", err));
-
-    // Fetch recent PR scans from backend
-    fetch('/api/dashboard/recent_scans')
-      .then(res => res.json())
-      .then(data => setRecentScans(data))
-      .catch(err => console.error("Error fetching recent scans:", err));
+    fetchAll();
+    const interval = setInterval(fetchAll, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   if (!isConfigured) {
@@ -45,7 +60,18 @@ function App() {
             </div>
           </div>
           <h2 className="text-2xl font-bold text-center text-slate-200 mb-2">Connect Repository</h2>
-          <p className="text-center text-slate-400 text-sm mb-8">Enter a GitHub repository URL to begin continuous authorization analysis.</p>
+          <p className="text-center text-slate-400 text-sm mb-6">Enter a GitHub repository URL to begin continuous authorization analysis.</p>
+
+          <div className="flex justify-center gap-4 mb-8">
+            <div className={`px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 ${aiStatus.mistral === 'online' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : aiStatus.mistral === 'checking' ? 'bg-slate-800 border border-slate-700 text-slate-400' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${aiStatus.mistral === 'online' ? 'bg-emerald-400 animate-pulse' : aiStatus.mistral === 'checking' ? 'bg-slate-500' : 'bg-red-500'}`}></span>
+              Mistral: {aiStatus.mistral}
+            </div>
+            <div className={`px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 ${aiStatus.qwen === 'online' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : aiStatus.qwen === 'checking' ? 'bg-slate-800 border border-slate-700 text-slate-400' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${aiStatus.qwen === 'online' ? 'bg-emerald-400 animate-pulse' : aiStatus.qwen === 'checking' ? 'bg-slate-500' : 'bg-red-500'}`}></span>
+              Qwen: {aiStatus.qwen}
+            </div>
+          </div>
 
           <form onSubmit={(e) => {
             e.preventDefault();
@@ -57,11 +83,13 @@ function App() {
               body: JSON.stringify({ github_url: repoUrl })
             }).then(() => {
               setIsScanning(false);
+              setScanProgress(2); // kick off the progress bar
               setIsConfigured(true);
               localStorage.setItem('sentinel_configured', 'true');
             }).catch(() => {
               setIsScanning(false);
-              setIsConfigured(true); // Proceed anyway for MVP testing
+              setScanProgress(2);
+              setIsConfigured(true);
               localStorage.setItem('sentinel_configured', 'true');
             });
           }}>
@@ -142,7 +170,20 @@ function App() {
         {/* Header */}
         <header className="h-20 border-b border-slate-800/50 flex items-center justify-between px-8 bg-slate-900/20 backdrop-blur-sm z-10">
           <h2 className="text-xl font-medium text-slate-200 capitalize">{activeTab.replace('_', ' ')}</h2>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={async () => {
+                if (!window.confirm('Clear all scan history and vulnerabilities?')) return;
+                await fetch('/api/dashboard/reset', { method: 'DELETE' });
+                setStats({ score: 100, drift: 0, exploits_prevented: 0 });
+                setRecentScans([]);
+                setVulnerabilities([]);
+                setScanProgress(0);
+              }}
+              className="px-4 py-1.5 rounded-xl bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-400 text-sm font-medium transition-colors"
+            >
+              🗑 Clear History
+            </button>
             <button
               onClick={() => {
                 setIsConfigured(false);
@@ -161,6 +202,28 @@ function App() {
             </div>
           </div>
         </header>
+
+        {/* AI Inference Progress Bar */}
+        {scanProgress > 0 && (
+          <div className="mx-8 mt-4 bg-slate-900/60 border border-emerald-500/20 rounded-xl p-4 backdrop-blur-md z-10">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-emerald-400 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                {scanProgress < 15 ? 'Downloading repository...' :
+                  scanProgress < 35 ? 'Parsing AST & extracting endpoints...' :
+                    scanProgress < 70 ? 'Running AI security analysis (Mistral + Qwen)...' :
+                      'Generating security report...'}
+              </span>
+              <span className="text-xs text-slate-400">{Math.round(scanProgress)}%</span>
+            </div>
+            <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-emerald-500 to-blue-400 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.6)] transition-all duration-1000 ease-linear"
+                style={{ width: `${scanProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Dashboard Content */}
         <main className="flex-1 p-8 z-10 w-full max-w-7xl mx-auto space-y-6">
@@ -255,6 +318,39 @@ function App() {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Vulnerabilities Panel */}
+          <div className="bg-slate-900/40 border border-red-900/30 rounded-2xl p-6 backdrop-blur-md shadow-xl">
+            <h3 className="text-lg font-medium text-slate-200 mb-2 flex items-center gap-2">
+              <AlertTriangle size={18} className="text-red-400" />
+              Detected Vulnerabilities
+              {vulnerabilities.length > 0 && (
+                <span className="ml-2 px-2 py-0.5 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30">{vulnerabilities.length}</span>
+              )}
+            </h3>
+            {vulnerabilities.length === 0 ? (
+              <p className="text-slate-500 text-sm mt-4">No vulnerabilities detected yet. Run a scan to see findings here.</p>
+            ) : (
+              <div className="space-y-3 mt-4">
+                {vulnerabilities.map((v, i) => (
+                  <div key={i} className="p-4 rounded-xl bg-red-950/20 border border-red-800/30 hover:border-red-600/40 transition-all">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full mr-2 ${v.vulnerability_type === 'BOLA' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                          {v.vulnerability_type}
+                        </span>
+                        <span className="text-sm font-mono text-slate-300">{v.method} {v.path}</span>
+                        <span className="ml-2 text-xs text-slate-500">in {v.function_name}()</span>
+                      </div>
+                      <span className="text-xs text-slate-400 whitespace-nowrap">Confidence: {v.confidence}%</span>
+                    </div>
+                    {v.reasoning && <p className="text-xs text-slate-400 mt-2 leading-relaxed">{v.reasoning}</p>}
+                    <p className="text-xs text-slate-600 mt-1">Repo: {v.repo} • {v.scan_time}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
         </main>
