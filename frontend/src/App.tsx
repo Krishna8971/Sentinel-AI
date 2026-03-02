@@ -60,6 +60,42 @@ function RedTeamPanel({ aiStatus }: { aiStatus: { mistral: string; qwen: string 
   const [expandedQwen, setExpandedQwen] = useState(true);
   const [expandedMistral, setExpandedMistral] = useState(true);
 
+  // Modal state for attack details and AI fix generation
+  const [selectedAttack, setSelectedAttack] = useState<(AttackResult & { _model: string }) | null>(null);
+  const [fixLoading, setFixLoading] = useState(false);
+  const [generatedFix, setGeneratedFix] = useState<string | null>(null);
+
+  const handleAttackClick = (attack: AttackResult, modelSource: string) => {
+    setSelectedAttack({ ...attack, _model: modelSource });
+    setGeneratedFix(null);
+  };
+
+  const generateFix = async () => {
+    if (!selectedAttack) return;
+    setFixLoading(true);
+    setGeneratedFix(null);
+    try {
+      const res = await fetch('/api/v1/attacks/generate-fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          attack_name: selectedAttack.attack_name,
+          attack_description: selectedAttack.attack_description,
+          target_endpoint: selectedAttack.target_endpoint,
+          target_method: selectedAttack.target_method,
+          vulnerability_title: selectedAttack.vulnerability_title,
+          recommendation: selectedAttack.recommendation
+        })
+      });
+      const data = await res.json();
+      setGeneratedFix(data.fix || 'No fix generated.');
+    } catch (e) {
+      setGeneratedFix('Error connecting to fix generator.');
+    } finally {
+      setFixLoading(false);
+    }
+  };
+
   const runPipeline = async (model: 'qwen' | 'mistral' | 'combined') => {
     const endpoint =
       model === 'combined'
@@ -206,12 +242,13 @@ function RedTeamPanel({ aiStatus }: { aiStatus: { mistral: string; qwen: string 
                 {result.attack_results.map((attack, i) => (
                   <div
                     key={i}
-                    className={`p-3 rounded-xl border transition-colors ${attack.attack_successful
-                      ? 'bg-red-950/20 border-red-800/30 hover:border-red-600/40'
-                      : 'bg-slate-800/20 border-slate-700/30 hover:border-slate-600/40'
+                    className={`p-3 rounded-xl border transition-all cursor-pointer ${attack.attack_successful
+                      ? 'bg-red-950/20 border-red-800/30 hover:border-red-500/50 hover:bg-red-900/30 shadow-[0_4px_12px_rgba(0,0,0,0.2)]'
+                      : 'bg-slate-800/20 border-slate-700/30 hover:border-slate-500/50 hover:bg-slate-800/40'
                       }`}
+                    onClick={() => handleAttackClick(attack, model)}
                   >
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center justify-between gap-2 flex-wrap pointer-events-none">
                       <div className="flex items-center gap-2 flex-wrap">
                         {attack.attack_successful ? (
                           <XCircle size={13} className="text-red-400 flex-shrink-0" />
@@ -373,7 +410,11 @@ function RedTeamPanel({ aiStatus }: { aiStatus: { mistral: string; qwen: string 
               </thead>
               <tbody className="divide-y divide-slate-800/50">
                 {allFindings.map((f, i) => (
-                  <tr key={i} className="hover:bg-slate-800/20 transition-colors">
+                  <tr
+                    key={i}
+                    className="hover:bg-slate-800/40 transition-colors cursor-pointer"
+                    onClick={() => handleAttackClick(f, f._model)}
+                  >
                     <td className="py-2.5 pr-4 font-medium text-slate-200">{f.attack_name}</td>
                     <td className="py-2.5 pr-4 font-mono text-slate-400">
                       <span className="text-slate-500 mr-1">{f.target_method}</span>
@@ -404,6 +445,149 @@ function RedTeamPanel({ aiStatus }: { aiStatus: { mistral: string; qwen: string 
           </div>
         </div>
       )}
+
+      {/* Attack Detail Modal */}
+      {selectedAttack && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setSelectedAttack(null)}
+        >
+          <div
+            className="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-3xl mx-4 max-h-[85vh] overflow-y-auto shadow-2xl custom-scrollbar"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between mb-6 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg ${selectedAttack.attack_successful ? 'bg-red-500/10 border border-red-500/20' : 'bg-emerald-500/10 border border-emerald-500/20'}`}>
+                  {selectedAttack.attack_successful ? <AlertTriangle size={24} className="text-red-400" /> : <ShieldAlert size={24} className="text-emerald-400" />}
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-100">{selectedAttack.attack_name}</h3>
+                  <div className="flex items-center gap-2 mt-1 -ml-1">
+                    <span className={`text-xs ml-1 px-2 py-0.5 rounded-full font-medium border ${severityClass(selectedAttack.original_severity)}`}>
+                      {selectedAttack.original_severity} Severity
+                    </span>
+                    <span className="text-xs text-slate-400 border border-slate-700 bg-slate-800/50 px-2 py-0.5 rounded-full">
+                      Difficulty: {selectedAttack.exploitation_difficulty}
+                    </span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full border ${selectedAttack.attack_successful ? 'text-red-400 border-red-500/30 bg-red-500/10' : 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'}`}>
+                      {selectedAttack.attack_successful ? 'Exploited' : 'Failed'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setSelectedAttack(null)} className="text-slate-500 hover:text-slate-300 p-1 bg-slate-800/50 rounded-lg hover:bg-slate-700 transition-colors">
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            {/* Attack Details */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Target Endpoint</h4>
+                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-sm">
+                    <span className="text-blue-400 mr-2">{selectedAttack.target_method}</span>
+                    <span className="text-slate-300">{selectedAttack.target_endpoint}</span>
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Vulnerability Context</h4>
+                  <p className="text-sm text-slate-300 bg-slate-800/30 border border-slate-800/50 p-3 rounded-lg leading-relaxed">
+                    {selectedAttack.vulnerability_title}
+                  </p>
+                </div>
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Source Model</h4>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-1 rounded-md text-xs font-semibold border ${selectedAttack._model === 'qwen' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
+                        selectedAttack._model === 'mistral' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                          'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                      }`}>
+                      {selectedAttack._model.toUpperCase()}
+                    </span>
+                    <span className="text-xs text-slate-500 bg-slate-800/50 px-2 py-1 rounded border border-slate-700">
+                      Confidence: {selectedAttack.confidence}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Attack Execution Log</h4>
+                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-400 leading-relaxed font-mono whitespace-pre-wrap">
+                    {selectedAttack.attack_description}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Recommendation</h4>
+                  <p className="text-sm text-slate-300 leading-relaxed pl-3 border-l-2 border-slate-700">
+                    {selectedAttack.recommendation}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* AI Fix Generator (only for successful attacks) */}
+            {selectedAttack.attack_successful && (
+              <div className="mt-8 pt-6 border-t border-slate-800">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h4 className="text-base font-semibold text-slate-200 flex items-center gap-2">
+                      <TerminalSquare size={16} className="text-blue-400" />
+                      AI Fix Generator
+                    </h4>
+                    <p className="text-xs text-slate-400 mt-1">Generate a hotfix code snippet using Groq to patch this vulnerability</p>
+                  </div>
+                  {!generatedFix && (
+                    <button
+                      onClick={generateFix}
+                      disabled={fixLoading}
+                      className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-lg text-sm font-semibold flex items-center gap-2 shadow-lg shadow-blue-500/20 transition-all disabled:opacity-50"
+                    >
+                      {fixLoading ? (
+                        <><Loader2 size={16} className="animate-spin" /> Analyzing...</>
+                      ) : (
+                        <><Activity size={16} /> Generate Fix</>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {/* Generated Code Display */}
+                {generatedFix && (
+                  <div className="relative mt-4">
+                    <div className="absolute top-0 right-0 p-2 opacity-50 text-xs font-mono text-slate-400">Powered by Groq</div>
+                    <pre className="bg-[#0d1117] border border-slate-700 rounded-xl p-4 overflow-x-auto text-sm text-slate-300 font-mono custom-scrollbar leading-relaxed">
+                      <code>{generatedFix}</code>
+                    </pre>
+                    <div className="flex justify-end mt-3 gap-3">
+                      <button
+                        onClick={() => navigator.clipboard.writeText(generatedFix)}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 rounded text-xs font-medium transition-colors"
+                      >
+                        Copy to Clipboard
+                      </button>
+                      <button
+                        onClick={generateFix}
+                        disabled={fixLoading}
+                        className="px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 rounded text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                      >
+                        {fixLoading ? <Loader2 size={12} className="animate-spin" /> : <Activity size={12} />}
+                        Regenerate
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # AI Model URLs (for health checks and per-model pipeline)
     mistral_api_url: str = os.getenv("MISTRAL_API_BASE_URL", "http://lm-proxy:8080")
     qwen_api_url: str = os.getenv("QWEN_API_BASE_URL", "http://qwen-proxy:8080")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     
     @property
     def database_url(self) -> str:

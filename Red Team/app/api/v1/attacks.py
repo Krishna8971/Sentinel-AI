@@ -17,6 +17,7 @@ import httpx
 from fastapi import APIRouter, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from groq import AsyncGroq
 
 from app.config import get_settings
 from app.database import get_db
@@ -161,3 +162,63 @@ async def list_recent_scans():
         "count": len(scans),
         "scans": scans,
     }
+
+
+# ── AI Code Fix Generation ────────────────────────────────────────────────────
+
+class FixRequest(BaseModel):
+    attack_name: str
+    attack_description: str
+    target_endpoint: str
+    target_method: str
+    vulnerability_title: str
+    recommendation: str
+
+@router.post("/generate-fix")
+async def generate_fix(req: FixRequest):
+    """
+    Use Groq (Llama 3) to generate a code snippet fix for a specific
+    vulnerability that was successfully exploited during red teaming.
+    """
+    if not settings.groq_api_key:
+        return {"fix": "Error: GROQ_API_KEY is not configured in the environment."}
+
+    client = AsyncGroq(api_key=settings.groq_api_key)
+    
+    prompt = f"""You are a senior security engineer. A vulnerability was found and successfully exploited in our web application.
+Please provide a concise, unified code snippet in Python (FastAPI/SQLAlchemy) to fix this issue.
+Do NOT output any conversational text, markdown formatting, or explanations. ONLY output the raw Python code snippet that patches the issue.
+
+Vulnerability: {req.vulnerability_title}
+Endpoint: {req.target_method} {req.target_endpoint}
+Exploit Used: {req.attack_name}
+Exploit Details: {req.attack_description}
+Security Recommendation: {req.recommendation}
+
+Provide the code fix:"""
+
+    try:
+        completion = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a senior security engineer. Output only valid raw code without markdown backticks or explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=1024,
+        )
+        
+        fix_code = completion.choices[0].message.content.strip()
+        
+        # Sometimes models still wrap in markdown despite prompt instructions, so strip it
+        if fix_code.startswith("```"):
+            lines = fix_code.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].startswith("```"):
+                lines = lines[:-1]
+            fix_code = "\n".join(lines).strip()
+            
+        return {"fix": fix_code}
+    except Exception as e:
+        return {"fix": f"Error generating fix from Groq: {str(e)}"}
